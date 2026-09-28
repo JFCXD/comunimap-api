@@ -4,7 +4,17 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/conexion.php';
 
-$sql = "SELECT * FROM usuarios";
+$sql = "
+    SELECT
+        idUsuario,
+        nombre,
+        email,
+        telefono,
+        rol,
+        estado
+    FROM usuarios
+    ORDER BY idUsuario DESC
+";
 
 $result = $conn->query($sql);
 
@@ -13,8 +23,7 @@ if (!$result) {
 
     echo json_encode([
         'success' => false,
-        'error' => 'Error al consultar usuarios',
-        'detalle' => $conn->error
+        'message' => 'Error al consultar usuarios'
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
@@ -30,6 +39,6 @@ echo json_encode([
     'success' => true,
     'total' => count($usuarios),
     'usuarios' => $usuarios
-], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+], JSON_UNESCAPED_UNICODE);
 
 $conn->close();
