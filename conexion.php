@@ -1,30 +1,31 @@
 <?php
 
-$host = getenv("DB_HOST");
-$db = getenv("DB_DATABASE");
-$user = getenv("DB_USERNAME");
-$password = getenv("DB_PASSWORD");
+$host = getenv('MYSQLHOST');
+$port = getenv('MYSQLPORT');
+$user = getenv('MYSQLUSER');
+$password = getenv('MYSQLPASSWORD');
+$database = getenv('MYSQLDATABASE');
 
+$conn = new mysqli(
+    $host,
+    $user,
+    $password,
+    $database,
+    (int)$port
+);
 
-try {
-    $conexion = new PDO(
-        "mysql:host=$host;dbname=$db;charset=utf8mb4",
-        $user,
-        $password
-    );
-
-    $conexion->setAttribute(
-        PDO::ATTR_ERRMODE,
-        PDO::ERRMODE_EXCEPTION
-    );
-
-} catch (PDOException $e) {
-
+if ($conn->connect_error) {
     http_response_code(500);
 
+    header('Content-Type: application/json; charset=utf-8');
+
     echo json_encode([
-        "error" => "Error de conexión a la base de datos"
-    ]);
+        'success' => false,
+        'error' => 'Error de conexión a la base de datos',
+        'detalle' => $conn->connect_error
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
+
+$conn->set_charset('utf8mb4');
