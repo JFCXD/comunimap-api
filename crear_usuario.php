@@ -4,9 +4,10 @@
 // API - CREAR USUARIO
 // =====================================================
 
+// Indicamos que la respuesta será JSON
 header('Content-Type: application/json; charset=utf-8');
 
-// Solo permitimos POST
+// Solo permitimos peticiones POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
@@ -14,19 +15,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode([
         'success' => false,
         'message' => 'Método no permitido'
-    ]);
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// Incluimos la conexión
+// Incluimos la conexión a la base de datos
 require_once __DIR__ . '/conexion.php';
 
-// Leemos los datos enviados
+// Leemos los datos JSON enviados desde Android
 $datos = json_decode(file_get_contents('php://input'), true);
 
 // =====================================================
-// VALIDACIÓN
+// VALIDACIÓN DE DATOS
 // =====================================================
 
 if (
@@ -41,35 +42,46 @@ if (
     echo json_encode([
         'success' => false,
         'message' => 'Faltan datos obligatorios'
-    ]);
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
 // =====================================================
-// DATOS
+// DATOS RECIBIDOS
 // =====================================================
 
+// Nombre del usuario
 $nombre = trim($datos['nombre']);
+
+// Correo electrónico
 $email = trim($datos['email']);
 
+// Teléfono opcional
 $telefono = $datos['telefono'] ?? null;
 
+// Rol recibido
 $rol = trim($datos['rol']);
 
-// Estado inicial
+// Estado inicial del usuario
 $estado = 'Activo';
 
-// Encriptamos la contraseña
-$password = password_hash(
-    $datos['password'],
-    PASSWORD_DEFAULT
-);
+// =====================================================
+// CONTRASEÑA
+// =====================================================
+
+// IMPORTANTE:
+// La página web actualmente valida las contraseñas usando SHA1.
+// Por eso usamos el mismo formato aquí para que los usuarios
+// creados desde Android también puedan iniciar sesión en la web.
+
+$password = sha1($datos['password']);
 
 // =====================================================
 // INSERTAR USUARIO
 // =====================================================
 
+// Preparamos la consulta para evitar SQL Injection
 $stmt = $conn->prepare("
     INSERT INTO usuarios
     (
@@ -83,6 +95,7 @@ $stmt = $conn->prepare("
     VALUES (?, ?, ?, ?, ?, ?)
 ");
 
+// Asignamos los valores a la consulta
 $stmt->bind_param(
     'ssssss',
     $nombre,
@@ -93,7 +106,10 @@ $stmt->bind_param(
     $estado
 );
 
-// Ejecutamos
+// =====================================================
+// EJECUTAR CONSULTA
+// =====================================================
+
 if (!$stmt->execute()) {
 
     http_response_code(500);
@@ -101,13 +117,13 @@ if (!$stmt->execute()) {
     echo json_encode([
         'success' => false,
         'message' => 'Error al crear usuario'
-    ]);
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
 // =====================================================
-// RESPUESTA
+// RESPUESTA EXITOSA
 // =====================================================
 
 echo json_encode([
@@ -116,6 +132,9 @@ echo json_encode([
     'idUsuario' => $stmt->insert_id
 ], JSON_UNESCAPED_UNICODE);
 
-// Cerramos recursos
+// =====================================================
+// CERRAR RECURSOS
+// =====================================================
+
 $stmt->close();
 $conn->close();
