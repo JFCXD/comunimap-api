@@ -1,57 +1,55 @@
 <?php
 
-// ==========================================
-// RESPUESTA EN FORMATO JSON
-// ==========================================
+// =====================================================
+// API - LISTAR CATEGORÍAS
+// =====================================================
 
-header("Content-Type: application/json; charset=UTF-8");
+// Indicamos que la respuesta será JSON
+header('Content-Type: application/json; charset=utf-8');
 
-// ==========================================
-// CONEXIÓN A LA BASE DE DATOS
-// ==========================================
+// Incluimos la conexión
+require_once __DIR__ . '/conexion.php';
 
-require_once "conexion.php";
+// Consulta de categorías
+$sql = "
+    SELECT
+        idCategoria,
+        nombre,
+        descripcion
+    FROM categorias
+    ORDER BY nombre ASC
+";
 
-try {
+// Ejecutamos la consulta
+$result = $conn->query($sql);
 
-    // ======================================
-    // CONSULTAR TODAS LAS CATEGORÍAS
-    // ======================================
-
-    $sql = "
-        SELECT
-            idCategoria,
-            nombre,
-            descripcion
-        FROM categorias
-        ORDER BY nombre ASC
-    ";
-
-    $consulta = $conexion->prepare($sql);
-
-    $consulta->execute();
-
-    // ======================================
-    // OBTENER RESULTADOS
-    // ======================================
-
-    $categorias = $consulta->fetchAll(PDO::FETCH_ASSOC);
-
-    // ======================================
-    // ENVIAR JSON A ANDROID
-    // ======================================
-
-    echo json_encode(
-        $categorias,
-        JSON_UNESCAPED_UNICODE
-    );
-
-} catch (PDOException $e) {
+// Si ocurre un error
+if (!$result) {
 
     http_response_code(500);
 
     echo json_encode([
-        "error" => "Error al consultar categorías"
-    ]);
+        'success' => false,
+        'message' => 'Error al consultar categorías'
+    ], JSON_UNESCAPED_UNICODE);
 
+    exit;
 }
+
+// Arreglo donde se guardarán las categorías
+$categorias = [];
+
+// Recorremos los resultados
+while ($fila = $result->fetch_assoc()) {
+    $categorias[] = $fila;
+}
+
+// Enviamos la respuesta
+echo json_encode([
+    'success' => true,
+    'total' => count($categorias),
+    'categorias' => $categorias
+], JSON_UNESCAPED_UNICODE);
+
+// Cerramos la conexión
+$conn->close();
