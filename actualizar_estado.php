@@ -6,7 +6,7 @@
 
 header('Content-Type: application/json; charset=utf-8');
 
-// Solo permitimos POST
+// Solo permitir POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
@@ -14,18 +14,46 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode([
         'success' => false,
         'message' => 'Método no permitido'
-    ]);
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// Incluimos la conexión
+// =====================================================
+// CONEXIÓN
+// =====================================================
+
 require_once __DIR__ . '/conexion.php';
 
-// Leemos los datos JSON
-$datos = json_decode(file_get_contents('php://input'), true);
+// =====================================================
+// LEER JSON
+// =====================================================
 
-// Validamos
+$datos = json_decode(
+    file_get_contents('php://input'),
+    true
+);
+
+// =====================================================
+// VALIDAR JSON
+// =====================================================
+
+if (!is_array($datos)) {
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'JSON inválido'
+    ], JSON_UNESCAPED_UNICODE);
+
+    exit;
+}
+
+// =====================================================
+// VALIDAR CAMPOS
+// =====================================================
+
 if (
     empty($datos['idReporte']) ||
     empty($datos['estado'])
@@ -35,49 +63,291 @@ if (
 
     echo json_encode([
         'success' => false,
-        'message' => 'Faltan datos obligatorios'
-    ]);
+        'message' => 'idReporte y estado son obligatorios'
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// Datos recibidos
 $idReporte = (int) $datos['idReporte'];
-$estado = trim($datos['estado']);
+$nuevoEstado = trim($datos['estado']);
 
-// Preparamos la consulta
-$stmt = $conn->prepare("
-    UPDATE reportes
-    SET estado = ?
-    WHERE idReporte = ?
-");
+// =====================================================
+// VALIDAR ESTADOS PERMITIDOS
+// =====================================================
 
-// Asignamos valores
-$stmt->bind_param(
-    'si',
-    $estado,
-    $idReporte
-);
+$estadosPermitidos = [
+    'Pendiente',
+    'En Proceso',
+    'Solucionado'
+];
 
-// Ejecutamos
-if (!$stmt->execute()) {
+if (!in_array($nuevoEstado, $estadosPermitidos, true)) {
+
+    http_response_code(400);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Estado no válido'
+    ], JSON_UNESCAPED_UNICODE);
+
+    exit;
+}
+
+// =====================================================
+// INICIAR TRANSACCIÓN
+// =====================================================
+
+$conn->begin_transaction();
+
+try {
+
+    // =====================================================
+    // OBTENER DATOS ACTUALES DEL REPORTE
+    // =====================================================
+
+    $stmtReporte = $conn->prepare("
+        SELECT
+            idUsuario,
+            titulo,
+            estado
+        FROM reportes
+        WHERE idReporte = ?
+        LIMIT 1
+    ");
+
+    if (!$stmtReporte) {
+        throw new Exception('No se pudo preparar la consulta del reporte');
+    }
+
+    $stmtReporte->bind_param(
+        'i',
+        $idReporte
+    );
+
+    $stmtReporte->execute();
+
+    $resultadoReporte =
+        $stmtReporte->get_result();
+
+    if ($resultadoReporte->num_rows === 0) {
+
+        $conn->rollback();
+
+        http_response_code(404);
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Reporte no encontrado'
+        ], JSON_UNESCAPED_UNICODE);
+
+        $stmtReporte->close();
+        $conn->close();
+
+        exit;
+    }
+
+    $reporte =
+        $resultadoReporte->fetch_assoc();
+
+    $idUsuarioReporte =
+        (int) $reporte['idUsuario'];
+
+    $tituloReporte =
+        $reporte['titulo'];
+
+    $estadoAnterior =
+        $reporte['estado'];
+
+    // =====================================================
+    // EVITAR ACTUALIZAR AL MISMO ESTADO
+    // =====================================================
+
+    if (
+        strcasecmp(
+            trim($estadoAnterior),
+            trim($nuevoEstado)
+        ) === 0
+    ) {
+
+        $conn->rollback();
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'El reporte ya tiene ese estado'
+        ], JSON_UNESCAPED_UNICODE);
+
+        $stmtReporte->close();
+        $conn->close();
+
+        exit;
+    }
+
+    // =====================================================
+    // ACTUALIZAR ESTADO
+    // =====================================================
+
+    $stmtActualizar = $conn->prepare("
+        UPDATE reportes
+        SET estado = ?
+        WHERE idReporte = ?
+    ");
+
+    if (!$stmtActualizar) {
+        throw new Exception('No se pudo preparar la actualización');
+    }
+
+    $stmtActualizar->bind_param(
+        'si',
+        $nuevoEstado,
+        $idReporte
+    );
+
+    if (!$stmtActualizar->execute()) {
+        throw new Exception('No se pudo actualizar el estado');
+    }
+
+    // =====================================================
+    // PREPARAR NOTIFICACIÓN
+    // =====================================================
+
+    $crearNotificacion = false;
+
+    $tituloNotificacion = '';
+    $mensajeNotificacion = '';
+    $tipoNotificacion = '';
+
+    // =====================================================
+    // NOTIFICACIÓN - EN PROCESO
+    // =====================================================
+
+    if (
+        strcasecmp(
+            $nuevoEstado,
+            'En Proceso'
+        ) === 0
+    ) {
+
+        $crearNotificacion = true;
+
+        $tituloNotificacion =
+            'Tu reporte está siendo atendido';
+
+        $mensajeNotificacion =
+            'El reporte "' .
+            $tituloReporte .
+            '" cambió a En Proceso.';
+
+        $tipoNotificacion =
+            'EN_PROCESO';
+    }
+
+    // =====================================================
+    // NOTIFICACIÓN - SOLUCIONADO
+    // =====================================================
+
+    if (
+        strcasecmp(
+            $nuevoEstado,
+            'Solucionado'
+        ) === 0
+    ) {
+
+        $crearNotificacion = true;
+
+        $tituloNotificacion =
+            'Tu reporte fue solucionado';
+
+        $mensajeNotificacion =
+            'El reporte "' .
+            $tituloReporte .
+            '" fue marcado como Solucionado.';
+
+        $tipoNotificacion =
+            'SOLUCIONADO';
+    }
+
+    // =====================================================
+    // CREAR NOTIFICACIÓN PARA EL DUEÑO DEL REPORTE
+    // =====================================================
+
+    if ($crearNotificacion) {
+
+        $stmtNotificacion = $conn->prepare("
+            INSERT INTO notificaciones
+            (
+                idUsuario,
+                idReporte,
+                titulo,
+                mensaje,
+                tipo,
+                leida
+            )
+            VALUES (?, ?, ?, ?, ?, 0)
+        ");
+
+        if (!$stmtNotificacion) {
+            throw new Exception(
+                'No se pudo preparar la notificación'
+            );
+        }
+
+        $stmtNotificacion->bind_param(
+            'iisss',
+            $idUsuarioReporte,
+            $idReporte,
+            $tituloNotificacion,
+            $mensajeNotificacion,
+            $tipoNotificacion
+        );
+
+        if (!$stmtNotificacion->execute()) {
+            throw new Exception(
+                'No se pudo crear la notificación'
+            );
+        }
+
+        $stmtNotificacion->close();
+    }
+
+    // =====================================================
+    // CONFIRMAR CAMBIOS
+    // =====================================================
+
+    $conn->commit();
+
+    // =====================================================
+    // RESPUESTA
+    // =====================================================
+
+    echo json_encode([
+        'success' => true,
+        'message' => 'Estado actualizado correctamente',
+        'estadoAnterior' => $estadoAnterior,
+        'estadoNuevo' => $nuevoEstado
+    ], JSON_UNESCAPED_UNICODE);
+
+    // =====================================================
+    // CERRAR
+    // =====================================================
+
+    $stmtActualizar->close();
+    $stmtReporte->close();
+
+} catch (Throwable $e) {
+
+    // =====================================================
+    // REVERTIR TODO SI FALLA
+    // =====================================================
+
+    $conn->rollback();
 
     http_response_code(500);
 
     echo json_encode([
         'success' => false,
-        'message' => 'Error al actualizar estado'
-    ]);
-
-    exit;
+        'message' => 'Error al actualizar el estado'
+    ], JSON_UNESCAPED_UNICODE);
 }
 
-// Respondemos
-echo json_encode([
-    'success' => true,
-    'message' => 'Estado actualizado correctamente'
-], JSON_UNESCAPED_UNICODE);
-
-// Cerramos recursos
-$stmt->close();
 $conn->close();
