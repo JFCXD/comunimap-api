@@ -1,90 +1,106 @@
 <?php
 
-// ==========================================
-// RESPUESTA JSON
-// ==========================================
+// =====================================================
+// API - CREAR REPORTE
+// =====================================================
 
-header("Content-Type: application/json; charset=UTF-8");
+header('Content-Type: application/json; charset=utf-8');
 
-// Solo permitimos solicitudes POST
-if ($_SERVER["REQUEST_METHOD"] !== "POST") {
+// Solo permitir POST
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
 
     echo json_encode([
-        "success" => false,
-        "mensaje" => "Método no permitido"
+        'success' => false,
+        'message' => 'Método no permitido'
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// ==========================================
-// CONEXIÓN A MYSQL
-// ==========================================
+// =====================================================
+// CONEXIÓN
+// =====================================================
 
-require_once "conexion.php";
+require_once __DIR__ . '/conexion.php';
 
-// ==========================================
-// RECIBIR JSON ENVIADO POR ANDROID
-// ==========================================
+// =====================================================
+// LEER JSON
+// =====================================================
 
 $datos = json_decode(
-    file_get_contents("php://input"),
+    file_get_contents('php://input'),
     true
 );
 
-// ==========================================
+// =====================================================
 // VALIDAR JSON
-// ==========================================
+// =====================================================
 
 if (!is_array($datos)) {
 
     http_response_code(400);
 
     echo json_encode([
-        "success" => false,
-        "mensaje" => "JSON inválido"
+        'success' => false,
+        'message' => 'JSON inválido'
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// ==========================================
-// VALIDAR DATOS OBLIGATORIOS
-// ==========================================
+// =====================================================
+// VALIDAR CAMPOS OBLIGATORIOS
+// =====================================================
 
 if (
-    empty($datos["titulo"]) ||
-    empty($datos["descripcion"]) ||
-    empty($datos["ubicacion"]) ||
-    empty($datos["idUsuario"]) ||
-    empty($datos["idCategoria"])
+    empty($datos['titulo']) ||
+    empty($datos['descripcion']) ||
+    empty($datos['ubicacion']) ||
+    empty($datos['idUsuario']) ||
+    empty($datos['idCategoria'])
 ) {
 
     http_response_code(400);
 
     echo json_encode([
-        "success" => false,
-        "mensaje" => "Faltan datos obligatorios"
+        'success' => false,
+        'message' => 'Faltan datos obligatorios'
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
+// =====================================================
+// DATOS DEL REPORTE
+// =====================================================
+
+$titulo = trim($datos['titulo']);
+$descripcion = trim($datos['descripcion']);
+$ubicacion = trim($datos['ubicacion']);
+
+$direccion = $datos['direccion'] ?? null;
+$imagen = $datos['imagen'] ?? null;
+
+$estado = 'Pendiente';
+
+$idUsuario = (int) $datos['idUsuario'];
+$idCategoria = (int) $datos['idCategoria'];
+
+// =====================================================
+// INICIAR TRANSACCIÓN
+// =====================================================
+
+$conn->begin_transaction();
+
 try {
 
-    // ==========================================
-    // INICIAR TRANSACCIÓN
-    // ==========================================
+    // =====================================================
+    // CREAR REPORTE
+    // =====================================================
 
-    $conexion->beginTransaction();
-
-    // ==========================================
-    // REGISTRAR REPORTE
-    // ==========================================
-
-    $sql = "
+    $stmt = $conn->prepare("
         INSERT INTO reportes
         (
             titulo,
@@ -96,156 +112,138 @@ try {
             idCategoria,
             imagen
         )
-        VALUES
-        (
-            :titulo,
-            :descripcion,
-            :ubicacion,
-            :direccion,
-            :estado,
-            :idUsuario,
-            :idCategoria,
-            :imagen
-        )
-    ";
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ");
 
-    $consulta = $conexion->prepare($sql);
+    if (!$stmt) {
+        throw new Exception('No se pudo preparar el registro del reporte');
+    }
 
-    $consulta->execute([
+    $stmt->bind_param(
+        'sssssiis',
+        $titulo,
+        $descripcion,
+        $ubicacion,
+        $direccion,
+        $estado,
+        $idUsuario,
+        $idCategoria,
+        $imagen
+    );
 
-        ":titulo" =>
-            trim($datos["titulo"]),
+    if (!$stmt->execute()) {
+        throw new Exception('No se pudo registrar el reporte');
+    }
 
-        ":descripcion" =>
-            trim($datos["descripcion"]),
+    // ID del reporte recién creado
+    $idReporteNuevo = $conn->insert_id;
 
-        ":ubicacion" =>
-            trim($datos["ubicacion"]),
-
-        ":direccion" =>
-            $datos["direccion"] ?? null,
-
-        // Todo reporte nuevo comienza como Pendiente
-        ":estado" =>
-            "Pendiente",
-
-        ":idUsuario" =>
-            (int) $datos["idUsuario"],
-
-        ":idCategoria" =>
-            (int) $datos["idCategoria"],
-
-        ":imagen" =>
-            $datos["imagen"] ?? null
-    ]);
-
-    // ==========================================
-    // OBTENER ID DEL REPORTE CREADO
-    // ==========================================
-
-    $idReporteNuevo = (int) $conexion->lastInsertId();
-
-    // ==========================================
+    // =====================================================
     // BUSCAR ADMINISTRADORES ACTIVOS
-    // ==========================================
+    // =====================================================
 
-    $sqlAdministradores = "
+    $stmtAdmins = $conn->prepare("
         SELECT idUsuario
         FROM usuarios
         WHERE LOWER(TRIM(rol)) = 'administrador'
         AND LOWER(TRIM(estado)) = 'activo'
-    ";
+    ");
 
-    $consultaAdministradores =
-        $conexion->prepare($sqlAdministradores);
+    if (!$stmtAdmins) {
+        throw new Exception('No se pudo consultar administradores');
+    }
 
-    $consultaAdministradores->execute();
+    $stmtAdmins->execute();
 
-    $administradores =
-        $consultaAdministradores->fetchAll(PDO::FETCH_ASSOC);
+    $resultadoAdmins = $stmtAdmins->get_result();
 
-    // ==========================================
-    // CREAR NOTIFICACIÓN PARA CADA ADMINISTRADOR
-    // ==========================================
+    // =====================================================
+    // PREPARAR NOTIFICACIÓN
+    // =====================================================
 
-    if (!empty($administradores)) {
+    $stmtNotificacion = $conn->prepare("
+        INSERT INTO notificaciones
+        (
+            idUsuario,
+            idReporte,
+            titulo,
+            mensaje,
+            tipo,
+            leida
+        )
+        VALUES (?, ?, ?, ?, ?, 0)
+    ");
 
-        $sqlNotificacion = "
-            INSERT INTO notificaciones
-            (
-                idUsuario,
-                idReporte,
-                titulo,
-                mensaje,
-                tipo,
-                leida
-            )
-            VALUES
-            (
-                :idUsuario,
-                :idReporte,
-                :titulo,
-                :mensaje,
-                :tipo,
-                0
-            )
-        ";
+    if (!$stmtNotificacion) {
+        throw new Exception('No se pudo preparar la notificación');
+    }
 
-        $consultaNotificacion =
-            $conexion->prepare($sqlNotificacion);
+    $tituloNotificacion = 'Nuevo reporte';
 
-        foreach ($administradores as $administrador) {
+    $mensajeNotificacion =
+        'Se ha registrado un nuevo reporte en ComuniMap.';
 
-            $consultaNotificacion->execute([
+    $tipoNotificacion = 'NUEVO_REPORTE';
 
-                ":idUsuario" =>
-                    (int) $administrador["idUsuario"],
+    // =====================================================
+    // CREAR UNA NOTIFICACIÓN PARA CADA ADMINISTRADOR
+    // =====================================================
 
-                ":idReporte" =>
-                    $idReporteNuevo,
+    while ($admin = $resultadoAdmins->fetch_assoc()) {
 
-                ":titulo" =>
-                    "Nuevo reporte",
+        $idAdministrador = (int) $admin['idUsuario'];
 
-                ":mensaje" =>
-                    "Se ha registrado un nuevo reporte en ComuniMap.",
+        $stmtNotificacion->bind_param(
+            'iisss',
+            $idAdministrador,
+            $idReporteNuevo,
+            $tituloNotificacion,
+            $mensajeNotificacion,
+            $tipoNotificacion
+        );
 
-                ":tipo" =>
-                    "NUEVO_REPORTE"
-            ]);
+        if (!$stmtNotificacion->execute()) {
+            throw new Exception(
+                'No se pudo crear una notificación'
+            );
         }
     }
 
-    // ==========================================
-    // CONFIRMAR TRANSACCIÓN
-    // ==========================================
+    // =====================================================
+    // CONFIRMAR TODO
+    // =====================================================
 
-    $conexion->commit();
+    $conn->commit();
 
-    // ==========================================
-    // RESPUESTA CORRECTA
-    // ==========================================
+    // =====================================================
+    // RESPUESTA
+    // =====================================================
 
     echo json_encode([
-        "success" => true,
-        "mensaje" => "Reporte registrado correctamente",
-        "idReporte" => $idReporteNuevo
+        'success' => true,
+        'message' => 'Reporte registrado correctamente',
+        'idReporte' => $idReporteNuevo
     ], JSON_UNESCAPED_UNICODE);
 
-} catch (PDOException $e) {
+    // =====================================================
+    // CERRAR RECURSOS
+    // =====================================================
 
-    // ==========================================
-    // CANCELAR CAMBIOS SI ALGO FALLA
-    // ==========================================
+    $stmtNotificacion->close();
+    $stmtAdmins->close();
+    $stmt->close();
 
-    if ($conexion->inTransaction()) {
-        $conexion->rollBack();
-    }
+} catch (Throwable $e) {
+
+    // Revertir todo si falla reporte o notificación
+    $conn->rollback();
 
     http_response_code(500);
 
     echo json_encode([
-        "success" => false,
-        "mensaje" => "Error al registrar el reporte"
+        'success' => false,
+        'message' => 'Error al registrar el reporte'
     ], JSON_UNESCAPED_UNICODE);
 }
+
+$conn->close();
