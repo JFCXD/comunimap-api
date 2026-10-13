@@ -1,128 +1,251 @@
 <?php
 
-// =====================================================
-// API - CREAR REPORTE
-// =====================================================
+// ==========================================
+// RESPUESTA JSON
+// ==========================================
 
-// Indicamos que la respuesta será JSON
-header('Content-Type: application/json; charset=utf-8');
+header("Content-Type: application/json; charset=UTF-8");
 
-// Solo permitimos peticiones POST
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+// Solo permitimos solicitudes POST
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 
     http_response_code(405);
 
     echo json_encode([
-        'success' => false,
-        'message' => 'Método no permitido'
-    ]);
+        "success" => false,
+        "mensaje" => "Método no permitido"
+    ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// Incluimos la conexión
-require_once __DIR__ . '/conexion.php';
+// ==========================================
+// CONEXIÓN A MYSQL
+// ==========================================
 
-// Leemos los datos JSON enviados desde Android
-$datos = json_decode(file_get_contents('php://input'), true);
+require_once "conexion.php";
 
-// =====================================================
-// VALIDACIÓN DE DATOS
-// =====================================================
+// ==========================================
+// RECIBIR JSON ENVIADO POR ANDROID
+// ==========================================
+
+$datos = json_decode(
+    file_get_contents("php://input"),
+    true
+);
+
+// ==========================================
+// VALIDAR JSON
+// ==========================================
+
+if (!is_array($datos)) {
+
+    http_response_code(400);
+
+    echo json_encode([
+        "success" => false,
+        "mensaje" => "JSON inválido"
+    ], JSON_UNESCAPED_UNICODE);
+
+    exit;
+}
+
+// ==========================================
+// VALIDAR DATOS OBLIGATORIOS
+// ==========================================
 
 if (
-    empty($datos['titulo']) ||
-    empty($datos['descripcion']) ||
-    empty($datos['ubicacion']) ||
-    empty($datos['idUsuario']) ||
-    empty($datos['idCategoria'])
+    empty($datos["titulo"]) ||
+    empty($datos["descripcion"]) ||
+    empty($datos["ubicacion"]) ||
+    empty($datos["idUsuario"]) ||
+    empty($datos["idCategoria"])
 ) {
 
     http_response_code(400);
 
     echo json_encode([
-        'success' => false,
-        'message' => 'Faltan datos obligatorios'
+        "success" => false,
+        "mensaje" => "Faltan datos obligatorios"
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-// =====================================================
-// DATOS RECIBIDOS
-// =====================================================
+try {
 
-$titulo = trim($datos['titulo']);
-$descripcion = trim($datos['descripcion']);
-$ubicacion = trim($datos['ubicacion']);
+    // ==========================================
+    // INICIAR TRANSACCIÓN
+    // ==========================================
 
-// Datos opcionales
-$direccion = $datos['direccion'] ?? null;
-$imagen = $datos['imagen'] ?? null;
+    $conexion->beginTransaction();
 
-// Estado inicial del reporte
-$estado = 'Pendiente';
+    // ==========================================
+    // REGISTRAR REPORTE
+    // ==========================================
 
-// Convertimos los IDs a números enteros
-$idUsuario = (int) $datos['idUsuario'];
-$idCategoria = (int) $datos['idCategoria'];
+    $sql = "
+        INSERT INTO reportes
+        (
+            titulo,
+            descripcion,
+            ubicacion,
+            direccion,
+            estado,
+            idUsuario,
+            idCategoria,
+            imagen
+        )
+        VALUES
+        (
+            :titulo,
+            :descripcion,
+            :ubicacion,
+            :direccion,
+            :estado,
+            :idUsuario,
+            :idCategoria,
+            :imagen
+        )
+    ";
 
-// =====================================================
-// INSERTAR REPORTE
-// =====================================================
+    $consulta = $conexion->prepare($sql);
 
-// Preparamos la consulta para evitar SQL Injection
-$stmt = $conn->prepare("
-    INSERT INTO reportes
-    (
-        titulo,
-        descripcion,
-        ubicacion,
-        direccion,
-        estado,
-        idUsuario,
-        idCategoria,
-        imagen
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-");
+    $consulta->execute([
 
-// Indicamos el tipo de cada dato
-$stmt->bind_param(
-    'sssssiis',
-    $titulo,
-    $descripcion,
-    $ubicacion,
-    $direccion,
-    $estado,
-    $idUsuario,
-    $idCategoria,
-    $imagen
-);
+        ":titulo" =>
+            trim($datos["titulo"]),
 
-// Ejecutamos la consulta
-if (!$stmt->execute()) {
+        ":descripcion" =>
+            trim($datos["descripcion"]),
+
+        ":ubicacion" =>
+            trim($datos["ubicacion"]),
+
+        ":direccion" =>
+            $datos["direccion"] ?? null,
+
+        // Todo reporte nuevo comienza como Pendiente
+        ":estado" =>
+            "Pendiente",
+
+        ":idUsuario" =>
+            (int) $datos["idUsuario"],
+
+        ":idCategoria" =>
+            (int) $datos["idCategoria"],
+
+        ":imagen" =>
+            $datos["imagen"] ?? null
+    ]);
+
+    // ==========================================
+    // OBTENER ID DEL REPORTE CREADO
+    // ==========================================
+
+    $idReporteNuevo = (int) $conexion->lastInsertId();
+
+    // ==========================================
+    // BUSCAR ADMINISTRADORES ACTIVOS
+    // ==========================================
+
+    $sqlAdministradores = "
+        SELECT idUsuario
+        FROM usuarios
+        WHERE LOWER(TRIM(rol)) = 'administrador'
+        AND LOWER(TRIM(estado)) = 'activo'
+    ";
+
+    $consultaAdministradores =
+        $conexion->prepare($sqlAdministradores);
+
+    $consultaAdministradores->execute();
+
+    $administradores =
+        $consultaAdministradores->fetchAll(PDO::FETCH_ASSOC);
+
+    // ==========================================
+    // CREAR NOTIFICACIÓN PARA CADA ADMINISTRADOR
+    // ==========================================
+
+    if (!empty($administradores)) {
+
+        $sqlNotificacion = "
+            INSERT INTO notificaciones
+            (
+                idUsuario,
+                idReporte,
+                titulo,
+                mensaje,
+                tipo,
+                leida
+            )
+            VALUES
+            (
+                :idUsuario,
+                :idReporte,
+                :titulo,
+                :mensaje,
+                :tipo,
+                0
+            )
+        ";
+
+        $consultaNotificacion =
+            $conexion->prepare($sqlNotificacion);
+
+        foreach ($administradores as $administrador) {
+
+            $consultaNotificacion->execute([
+
+                ":idUsuario" =>
+                    (int) $administrador["idUsuario"],
+
+                ":idReporte" =>
+                    $idReporteNuevo,
+
+                ":titulo" =>
+                    "Nuevo reporte",
+
+                ":mensaje" =>
+                    "Se ha registrado un nuevo reporte en ComuniMap.",
+
+                ":tipo" =>
+                    "NUEVO_REPORTE"
+            ]);
+        }
+    }
+
+    // ==========================================
+    // CONFIRMAR TRANSACCIÓN
+    // ==========================================
+
+    $conexion->commit();
+
+    // ==========================================
+    // RESPUESTA CORRECTA
+    // ==========================================
+
+    echo json_encode([
+        "success" => true,
+        "mensaje" => "Reporte registrado correctamente",
+        "idReporte" => $idReporteNuevo
+    ], JSON_UNESCAPED_UNICODE);
+
+} catch (PDOException $e) {
+
+    // ==========================================
+    // CANCELAR CAMBIOS SI ALGO FALLA
+    // ==========================================
+
+    if ($conexion->inTransaction()) {
+        $conexion->rollBack();
+    }
 
     http_response_code(500);
 
     echo json_encode([
-        'success' => false,
-        'message' => 'Error al registrar reporte'
+        "success" => false,
+        "mensaje" => "Error al registrar el reporte"
     ], JSON_UNESCAPED_UNICODE);
-
-    exit;
 }
-
-// =====================================================
-// RESPUESTA EXITOSA
-// =====================================================
-
-echo json_encode([
-    'success' => true,
-    'message' => 'Reporte registrado correctamente',
-    'idReporte' => $stmt->insert_id
-], JSON_UNESCAPED_UNICODE);
-
-// Cerramos recursos
-$stmt->close();
-$conn->close();
