@@ -20,10 +20,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =====================================================
-// CONEXIÓN
+// CONEXIÓN Y PUSH
 // =====================================================
 
 require_once __DIR__ . '/conexion.php';
+require_once __DIR__ . '/enviar_notificacion_push.php';
 
 // =====================================================
 // LEER JSON
@@ -51,7 +52,7 @@ if (!is_array($datos)) {
 }
 
 // =====================================================
-// VALIDAR CAMPOS OBLIGATORIOS
+// VALIDAR CAMPOS
 // =====================================================
 
 if (
@@ -73,7 +74,7 @@ if (
 }
 
 // =====================================================
-// DATOS DEL REPORTE
+// DATOS RECIBIDOS
 // =====================================================
 
 $titulo = trim($datos['titulo']);
@@ -97,7 +98,7 @@ $conn->begin_transaction();
 try {
 
     // =====================================================
-    // CREAR REPORTE
+    // INSERTAR REPORTE
     // =====================================================
 
     $stmt = $conn->prepare("
@@ -116,7 +117,9 @@ try {
     ");
 
     if (!$stmt) {
-        throw new Exception('No se pudo preparar el registro del reporte');
+        throw new Exception(
+            'No se pudo preparar la creación del reporte'
+        );
     }
 
     $stmt->bind_param(
@@ -132,10 +135,11 @@ try {
     );
 
     if (!$stmt->execute()) {
-        throw new Exception('No se pudo registrar el reporte');
+        throw new Exception(
+            'No se pudo registrar el reporte'
+        );
     }
 
-    // ID del reporte recién creado
     $idReporteNuevo = $conn->insert_id;
 
     // =====================================================
@@ -146,19 +150,24 @@ try {
         SELECT idUsuario
         FROM usuarios
         WHERE LOWER(TRIM(rol)) = 'administrador'
-        AND LOWER(TRIM(estado)) = 'activo'
+          AND LOWER(TRIM(estado)) = 'activo'
     ");
 
     if (!$stmtAdmins) {
-        throw new Exception('No se pudo consultar administradores');
+        throw new Exception(
+            'No se pudo preparar la consulta de administradores'
+        );
     }
 
     $stmtAdmins->execute();
 
-    $resultadoAdmins = $stmtAdmins->get_result();
+    $resultadoAdmins =
+        $stmtAdmins->get_result();
+
+    $idsAdministradores = [];
 
     // =====================================================
-    // PREPARAR NOTIFICACIÓN
+    // CREAR NOTIFICACIÓN INTERNA PARA CADA ADMIN
     // =====================================================
 
     $stmtNotificacion = $conn->prepare("
@@ -175,7 +184,9 @@ try {
     ");
 
     if (!$stmtNotificacion) {
-        throw new Exception('No se pudo preparar la notificación');
+        throw new Exception(
+            'No se pudo preparar la notificación'
+        );
     }
 
     $tituloNotificacion = 'Nuevo reporte';
@@ -183,15 +194,18 @@ try {
     $mensajeNotificacion =
         'Se ha registrado un nuevo reporte en ComuniMap.';
 
-    $tipoNotificacion = 'NUEVO_REPORTE';
+    $tipoNotificacion =
+        'NUEVO_REPORTE';
 
-    // =====================================================
-    // CREAR UNA NOTIFICACIÓN PARA CADA ADMINISTRADOR
-    // =====================================================
+    while (
+        $admin = $resultadoAdmins->fetch_assoc()
+    ) {
 
-    while ($admin = $resultadoAdmins->fetch_assoc()) {
+        $idAdministrador =
+            (int) $admin['idUsuario'];
 
-        $idAdministrador = (int) $admin['idUsuario'];
+        $idsAdministradores[] =
+            $idAdministrador;
 
         $stmtNotificacion->bind_param(
             'iisss',
@@ -204,29 +218,123 @@ try {
 
         if (!$stmtNotificacion->execute()) {
             throw new Exception(
-                'No se pudo crear una notificación'
+                'No se pudo crear la notificación'
             );
         }
     }
 
     // =====================================================
-    // CONFIRMAR TODO
+    // CONFIRMAR CAMBIOS
     // =====================================================
 
     $conn->commit();
 
     // =====================================================
-    // RESPUESTA
+    // ENVIAR PUSH A LOS ADMINISTRADORES
+    // =====================================================
+    // Esto ocurre DESPUÉS del commit.
+    // Si Firebase falla, el reporte sigue guardado.
+
+    foreach (
+        $idsAdministradores
+        as $idAdministrador
+    ) {
+
+        try {
+
+            $stmtTokens = $conn->prepare("
+                SELECT token
+                FROM dispositivos_fcm
+                WHERE idUsuario = ?
+                ORDER BY fechaActualizacion DESC
+            ");
+
+            if (!$stmtTokens) {
+                throw new Exception(
+                    'No se pudo preparar la consulta de tokens'
+                );
+            }
+
+            $stmtTokens->bind_param(
+                'i',
+                $idAdministrador
+            );
+
+            $stmtTokens->execute();
+
+            $resultadoTokens =
+                $stmtTokens->get_result();
+
+            while (
+                $filaToken =
+                    $resultadoTokens->fetch_assoc()
+            ) {
+
+                $tokenDispositivo =
+                    trim($filaToken['token']);
+
+                if ($tokenDispositivo === '') {
+                    continue;
+                }
+
+                $resultadoPush =
+                    enviarNotificacionPush(
+                        $tokenDispositivo,
+                        $tituloNotificacion,
+                        $mensajeNotificacion,
+                        [
+                            'tipo' =>
+                                $tipoNotificacion,
+
+                            'idReporte' =>
+                                $idReporteNuevo
+                        ]
+                    );
+
+                if (
+                    empty($resultadoPush['success'])
+                ) {
+
+                    error_log(
+                        'Error push administrador ' .
+                        $idAdministrador .
+                        ': ' .
+                        json_encode(
+                            $resultadoPush,
+                            JSON_UNESCAPED_UNICODE
+                        )
+                    );
+                }
+            }
+
+            $stmtTokens->close();
+
+        } catch (Throwable $e) {
+
+            error_log(
+                'Error enviando push al administrador ' .
+                $idAdministrador .
+                ': ' .
+                $e->getMessage()
+            );
+        }
+    }
+
+    // =====================================================
+    // RESPUESTA EXITOSA
     // =====================================================
 
     echo json_encode([
         'success' => true,
-        'message' => 'Reporte registrado correctamente',
-        'idReporte' => $idReporteNuevo
+        'message' =>
+            'Reporte registrado correctamente',
+
+        'idReporte' =>
+            $idReporteNuevo
     ], JSON_UNESCAPED_UNICODE);
 
     // =====================================================
-    // CERRAR RECURSOS
+    // CERRAR
     // =====================================================
 
     $stmtNotificacion->close();
@@ -235,14 +343,23 @@ try {
 
 } catch (Throwable $e) {
 
-    // Revertir todo si falla reporte o notificación
+    // =====================================================
+    // REVERTIR SI FALLA LA OPERACIÓN PRINCIPAL
+    // =====================================================
+
     $conn->rollback();
+
+    error_log(
+        'Error crear_reporte.php: ' .
+        $e->getMessage()
+    );
 
     http_response_code(500);
 
     echo json_encode([
         'success' => false,
-        'message' => 'Error al registrar el reporte'
+        'message' =>
+            'Error al registrar reporte'
     ], JSON_UNESCAPED_UNICODE);
 }
 
