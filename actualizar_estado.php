@@ -20,10 +20,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =====================================================
-// CONEXIÓN
+// CONEXIÓN Y PUSH
 // =====================================================
 
 require_once __DIR__ . '/conexion.php';
+require_once __DIR__ . '/enviar_notificacion_push.php';
 
 // =====================================================
 // LEER JSON
@@ -63,17 +64,21 @@ if (
 
     echo json_encode([
         'success' => false,
-        'message' => 'idReporte y estado son obligatorios'
+        'message' =>
+            'idReporte y estado son obligatorios'
     ], JSON_UNESCAPED_UNICODE);
 
     exit;
 }
 
-$idReporte = (int) $datos['idReporte'];
-$nuevoEstado = trim($datos['estado']);
+$idReporte =
+    (int) $datos['idReporte'];
+
+$nuevoEstado =
+    trim($datos['estado']);
 
 // =====================================================
-// VALIDAR ESTADOS PERMITIDOS
+// VALIDAR ESTADOS
 // =====================================================
 
 $estadosPermitidos = [
@@ -82,7 +87,13 @@ $estadosPermitidos = [
     'Solucionado'
 ];
 
-if (!in_array($nuevoEstado, $estadosPermitidos, true)) {
+if (
+    !in_array(
+        $nuevoEstado,
+        $estadosPermitidos,
+        true
+    )
+) {
 
     http_response_code(400);
 
@@ -117,7 +128,9 @@ try {
     ");
 
     if (!$stmtReporte) {
-        throw new Exception('No se pudo preparar la consulta del reporte');
+        throw new Exception(
+            'No se pudo preparar la consulta del reporte'
+        );
     }
 
     $stmtReporte->bind_param(
@@ -130,7 +143,9 @@ try {
     $resultadoReporte =
         $stmtReporte->get_result();
 
-    if ($resultadoReporte->num_rows === 0) {
+    if (
+        $resultadoReporte->num_rows === 0
+    ) {
 
         $conn->rollback();
 
@@ -160,7 +175,7 @@ try {
         $reporte['estado'];
 
     // =====================================================
-    // EVITAR ACTUALIZAR AL MISMO ESTADO
+    // EVITAR MISMO ESTADO
     // =====================================================
 
     if (
@@ -174,7 +189,8 @@ try {
 
         echo json_encode([
             'success' => true,
-            'message' => 'El reporte ya tiene ese estado'
+            'message' =>
+                'El reporte ya tiene ese estado'
         ], JSON_UNESCAPED_UNICODE);
 
         $stmtReporte->close();
@@ -194,7 +210,9 @@ try {
     ");
 
     if (!$stmtActualizar) {
-        throw new Exception('No se pudo preparar la actualización');
+        throw new Exception(
+            'No se pudo preparar la actualización'
+        );
     }
 
     $stmtActualizar->bind_param(
@@ -204,7 +222,9 @@ try {
     );
 
     if (!$stmtActualizar->execute()) {
-        throw new Exception('No se pudo actualizar el estado');
+        throw new Exception(
+            'No se pudo actualizar el estado'
+        );
     }
 
     // =====================================================
@@ -218,7 +238,7 @@ try {
     $tipoNotificacion = '';
 
     // =====================================================
-    // NOTIFICACIÓN - EN PROCESO
+    // EN PROCESO
     // =====================================================
 
     if (
@@ -243,7 +263,7 @@ try {
     }
 
     // =====================================================
-    // NOTIFICACIÓN - SOLUCIONADO
+    // SOLUCIONADO
     // =====================================================
 
     if (
@@ -268,7 +288,7 @@ try {
     }
 
     // =====================================================
-    // CREAR NOTIFICACIÓN PARA EL DUEÑO DEL REPORTE
+    // CREAR NOTIFICACIÓN INTERNA
     // =====================================================
 
     if ($crearNotificacion) {
@@ -301,7 +321,10 @@ try {
             $tipoNotificacion
         );
 
-        if (!$stmtNotificacion->execute()) {
+        if (
+            !$stmtNotificacion->execute()
+        ) {
+
             throw new Exception(
                 'No se pudo crear la notificación'
             );
@@ -317,14 +340,111 @@ try {
     $conn->commit();
 
     // =====================================================
+    // ENVIAR PUSH AL DUEÑO
+    // =====================================================
+    // Solo si se generó una notificación.
+    // Se ejecuta después del commit.
+
+    if ($crearNotificacion) {
+
+        try {
+
+            $stmtTokens = $conn->prepare("
+                SELECT token
+                FROM dispositivos_fcm
+                WHERE idUsuario = ?
+                ORDER BY fechaActualizacion DESC
+            ");
+
+            if (!$stmtTokens) {
+                throw new Exception(
+                    'No se pudo preparar la consulta de tokens'
+                );
+            }
+
+            $stmtTokens->bind_param(
+                'i',
+                $idUsuarioReporte
+            );
+
+            $stmtTokens->execute();
+
+            $resultadoTokens =
+                $stmtTokens->get_result();
+
+            while (
+                $filaToken =
+                    $resultadoTokens->fetch_assoc()
+            ) {
+
+                $tokenDispositivo =
+                    trim($filaToken['token']);
+
+                if (
+                    $tokenDispositivo === ''
+                ) {
+                    continue;
+                }
+
+                $resultadoPush =
+                    enviarNotificacionPush(
+                        $tokenDispositivo,
+                        $tituloNotificacion,
+                        $mensajeNotificacion,
+                        [
+                            'tipo' =>
+                                $tipoNotificacion,
+
+                            'idReporte' =>
+                                $idReporte
+                        ]
+                    );
+
+                if (
+                    empty(
+                        $resultadoPush['success']
+                    )
+                ) {
+
+                    error_log(
+                        'Error push usuario ' .
+                        $idUsuarioReporte .
+                        ': ' .
+                        json_encode(
+                            $resultadoPush,
+                            JSON_UNESCAPED_UNICODE
+                        )
+                    );
+                }
+            }
+
+            $stmtTokens->close();
+
+        } catch (Throwable $e) {
+
+            error_log(
+                'Error enviando push al usuario ' .
+                $idUsuarioReporte .
+                ': ' .
+                $e->getMessage()
+            );
+        }
+    }
+
+    // =====================================================
     // RESPUESTA
     // =====================================================
 
     echo json_encode([
         'success' => true,
-        'message' => 'Estado actualizado correctamente',
-        'estadoAnterior' => $estadoAnterior,
-        'estadoNuevo' => $nuevoEstado
+        'message' =>
+            'Estado actualizado correctamente',
+
+        'estadoAnterior' =>
+            $estadoAnterior,
+
+        'estadoNuevo' =>
+            $nuevoEstado
     ], JSON_UNESCAPED_UNICODE);
 
     // =====================================================
@@ -336,17 +456,24 @@ try {
 
 } catch (Throwable $e) {
 
-    // =====================================================
-    // REVERTIR TODO SI FALLA
-    // =====================================================
+    // Si el commit todavía no ocurrió,
+    // se revierten los cambios principales.
+    try {
+        $conn->rollback();
+    } catch (Throwable $ignored) {
+    }
 
-    $conn->rollback();
+    error_log(
+        'Error actualizar_estado.php: ' .
+        $e->getMessage()
+    );
 
     http_response_code(500);
 
     echo json_encode([
         'success' => false,
-        'message' => 'Error al actualizar el estado'
+        'message' =>
+            'Error al actualizar el estado'
     ], JSON_UNESCAPED_UNICODE);
 }
 
