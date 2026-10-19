@@ -6,7 +6,10 @@
 
 header('Content-Type: application/json; charset=utf-8');
 
-// Solo permitir POST
+// =====================================================
+// VALIDAR MÉTODO
+// =====================================================
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
@@ -20,11 +23,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =====================================================
-// CONEXIÓN Y PUSH
+// CONEXIÓN
 // =====================================================
 
 require_once __DIR__ . '/conexion.php';
-require_once __DIR__ . '/enviar_notificacion_push.php';
 
 // =====================================================
 // LEER JSON
@@ -36,23 +38,7 @@ $datos = json_decode(
 );
 
 // =====================================================
-// VALIDAR JSON
-// =====================================================
-
-if (!is_array($datos)) {
-
-    http_response_code(400);
-
-    echo json_encode([
-        'success' => false,
-        'message' => 'JSON inválido'
-    ], JSON_UNESCAPED_UNICODE);
-
-    exit;
-}
-
-// =====================================================
-// VALIDAR CAMPOS
+// VALIDAR DATOS
 // =====================================================
 
 if (
@@ -74,7 +60,7 @@ if (
 }
 
 // =====================================================
-// DATOS RECIBIDOS
+// DATOS PRINCIPALES
 // =====================================================
 
 $titulo = trim($datos['titulo']);
@@ -84,283 +70,151 @@ $ubicacion = trim($datos['ubicacion']);
 $direccion = $datos['direccion'] ?? null;
 $imagen = $datos['imagen'] ?? null;
 
+// Estado inicial
 $estado = 'Pendiente';
+
+// La prioridad será calculada posteriormente.
+// Por ahora queda NULL.
+$prioridad = null;
 
 $idUsuario = (int) $datos['idUsuario'];
 $idCategoria = (int) $datos['idCategoria'];
 
 // =====================================================
-// INICIAR TRANSACCIÓN
+// SEPARAR LATITUD Y LONGITUD
 // =====================================================
 
-$conn->begin_transaction();
+$latitud = null;
+$longitud = null;
 
-try {
+// Android actualmente envía:
+// -17.437995,-66.146491
+if (
+    !empty($ubicacion) &&
+    strpos($ubicacion, ',') !== false
+) {
 
-    // =====================================================
-    // INSERTAR REPORTE
-    // =====================================================
+    $coordenadas = explode(',', $ubicacion);
 
-    $stmt = $conn->prepare("
-        INSERT INTO reportes
-        (
-            titulo,
-            descripcion,
-            ubicacion,
-            direccion,
-            estado,
-            idUsuario,
-            idCategoria,
-            imagen
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ");
+    if (count($coordenadas) >= 2) {
 
-    if (!$stmt) {
-        throw new Exception(
-            'No se pudo preparar la creación del reporte'
-        );
-    }
+        $latitudTemporal = trim($coordenadas[0]);
+        $longitudTemporal = trim($coordenadas[1]);
 
-    $stmt->bind_param(
-        'sssssiis',
-        $titulo,
-        $descripcion,
-        $ubicacion,
-        $direccion,
-        $estado,
-        $idUsuario,
-        $idCategoria,
-        $imagen
-    );
+        if (
+            is_numeric($latitudTemporal) &&
+            is_numeric($longitudTemporal)
+        ) {
 
-    if (!$stmt->execute()) {
-        throw new Exception(
-            'No se pudo registrar el reporte'
-        );
-    }
-
-    $idReporteNuevo = $conn->insert_id;
-
-    // =====================================================
-    // BUSCAR ADMINISTRADORES ACTIVOS
-    // =====================================================
-
-    $stmtAdmins = $conn->prepare("
-        SELECT idUsuario
-        FROM usuarios
-        WHERE LOWER(TRIM(rol)) = 'administrador'
-          AND LOWER(TRIM(estado)) = 'activo'
-    ");
-
-    if (!$stmtAdmins) {
-        throw new Exception(
-            'No se pudo preparar la consulta de administradores'
-        );
-    }
-
-    $stmtAdmins->execute();
-
-    $resultadoAdmins =
-        $stmtAdmins->get_result();
-
-    $idsAdministradores = [];
-
-    // =====================================================
-    // CREAR NOTIFICACIÓN INTERNA PARA CADA ADMIN
-    // =====================================================
-
-    $stmtNotificacion = $conn->prepare("
-        INSERT INTO notificaciones
-        (
-            idUsuario,
-            idReporte,
-            titulo,
-            mensaje,
-            tipo,
-            leida
-        )
-        VALUES (?, ?, ?, ?, ?, 0)
-    ");
-
-    if (!$stmtNotificacion) {
-        throw new Exception(
-            'No se pudo preparar la notificación'
-        );
-    }
-
-    $tituloNotificacion = 'Nuevo reporte';
-
-    $mensajeNotificacion =
-        'Se ha registrado un nuevo reporte en ComuniMap.';
-
-    $tipoNotificacion =
-        'NUEVO_REPORTE';
-
-    while (
-        $admin = $resultadoAdmins->fetch_assoc()
-    ) {
-
-        $idAdministrador =
-            (int) $admin['idUsuario'];
-
-        $idsAdministradores[] =
-            $idAdministrador;
-
-        $stmtNotificacion->bind_param(
-            'iisss',
-            $idAdministrador,
-            $idReporteNuevo,
-            $tituloNotificacion,
-            $mensajeNotificacion,
-            $tipoNotificacion
-        );
-
-        if (!$stmtNotificacion->execute()) {
-            throw new Exception(
-                'No se pudo crear la notificación'
-            );
+            $latitud = (float) $latitudTemporal;
+            $longitud = (float) $longitudTemporal;
         }
     }
+}
 
-    // =====================================================
-    // CONFIRMAR CAMBIOS
-    // =====================================================
+// =====================================================
+// VALIDAR COORDENADAS
+// =====================================================
 
-    $conn->commit();
+if ($latitud === null || $longitud === null) {
 
-    // =====================================================
-    // ENVIAR PUSH A LOS ADMINISTRADORES
-    // =====================================================
-    // Esto ocurre DESPUÉS del commit.
-    // Si Firebase falla, el reporte sigue guardado.
-
-    foreach (
-        $idsAdministradores
-        as $idAdministrador
-    ) {
-
-        try {
-
-            $stmtTokens = $conn->prepare("
-                SELECT token
-                FROM dispositivos_fcm
-                WHERE idUsuario = ?
-                ORDER BY fechaActualizacion DESC
-            ");
-
-            if (!$stmtTokens) {
-                throw new Exception(
-                    'No se pudo preparar la consulta de tokens'
-                );
-            }
-
-            $stmtTokens->bind_param(
-                'i',
-                $idAdministrador
-            );
-
-            $stmtTokens->execute();
-
-            $resultadoTokens =
-                $stmtTokens->get_result();
-
-            while (
-                $filaToken =
-                    $resultadoTokens->fetch_assoc()
-            ) {
-
-                $tokenDispositivo =
-                    trim($filaToken['token']);
-
-                if ($tokenDispositivo === '') {
-                    continue;
-                }
-
-                $resultadoPush =
-                    enviarNotificacionPush(
-                        $tokenDispositivo,
-                        $tituloNotificacion,
-                        $mensajeNotificacion,
-                        [
-                            'tipo' =>
-                                $tipoNotificacion,
-
-                            'idReporte' =>
-                                $idReporteNuevo
-                        ]
-                    );
-
-                if (
-                    empty($resultadoPush['success'])
-                ) {
-
-                    error_log(
-                        'Error push administrador ' .
-                        $idAdministrador .
-                        ': ' .
-                        json_encode(
-                            $resultadoPush,
-                            JSON_UNESCAPED_UNICODE
-                        )
-                    );
-                }
-            }
-
-            $stmtTokens->close();
-
-        } catch (Throwable $e) {
-
-            error_log(
-                'Error enviando push al administrador ' .
-                $idAdministrador .
-                ': ' .
-                $e->getMessage()
-            );
-        }
-    }
-
-    // =====================================================
-    // RESPUESTA EXITOSA
-    // =====================================================
+    http_response_code(400);
 
     echo json_encode([
-        'success' => true,
-        'message' =>
-            'Reporte registrado correctamente',
-
-        'idReporte' =>
-            $idReporteNuevo
+        'success' => false,
+        'message' => 'La ubicación del reporte no contiene coordenadas válidas.'
     ], JSON_UNESCAPED_UNICODE);
 
-    // =====================================================
-    // CERRAR
-    // =====================================================
+    $conn->close();
 
-    $stmtNotificacion->close();
-    $stmtAdmins->close();
-    $stmt->close();
+    exit;
+}
 
-} catch (Throwable $e) {
+// =====================================================
+// INSERTAR REPORTE
+// =====================================================
 
-    // =====================================================
-    // REVERTIR SI FALLA LA OPERACIÓN PRINCIPAL
-    // =====================================================
+$stmt = $conn->prepare("
+    INSERT INTO reportes
+    (
+        titulo,
+        descripcion,
+        ubicacion,
+        latitud,
+        longitud,
+        direccion,
+        estado,
+        prioridad,
+        idUsuario,
+        idCategoria,
+        imagen
+    )
+    VALUES
+    (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    )
+");
 
-    $conn->rollback();
+// Tipos:
+// s titulo
+// s descripcion
+// s ubicacion
+// d latitud
+// d longitud
+// s direccion
+// s estado
+// s prioridad
+// i idUsuario
+// i idCategoria
+// s imagen
 
-    error_log(
-        'Error crear_reporte.php: ' .
-        $e->getMessage()
-    );
+$stmt->bind_param(
+    'sssddsssiis',
+    $titulo,
+    $descripcion,
+    $ubicacion,
+    $latitud,
+    $longitud,
+    $direccion,
+    $estado,
+    $prioridad,
+    $idUsuario,
+    $idCategoria,
+    $imagen
+);
+
+// =====================================================
+// EJECUTAR
+// =====================================================
+
+if (!$stmt->execute()) {
 
     http_response_code(500);
 
     echo json_encode([
         'success' => false,
-        'message' =>
-            'Error al registrar reporte'
+        'message' => 'Error al registrar reporte'
     ], JSON_UNESCAPED_UNICODE);
+
+    $stmt->close();
+    $conn->close();
+
+    exit;
 }
 
+// =====================================================
+// RESPUESTA
+// =====================================================
+
+echo json_encode([
+    'success' => true,
+    'message' => 'Reporte registrado correctamente',
+    'idReporte' => $stmt->insert_id
+], JSON_UNESCAPED_UNICODE);
+
+// =====================================================
+// CERRAR
+// =====================================================
+
+$stmt->close();
 $conn->close();
