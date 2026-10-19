@@ -4,14 +4,12 @@
 // API - INICIO DE SESIÓN
 // =====================================================
 
-// Indicamos que la respuesta será en formato JSON
 header('Content-Type: application/json; charset=utf-8');
 
 // =====================================================
 // VALIDAR MÉTODO HTTP
 // =====================================================
 
-// Este endpoint solamente acepta peticiones POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
@@ -31,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 require_once __DIR__ . '/conexion.php';
 
 // =====================================================
-// LEER JSON ENVIADO DESDE ANDROID
+// LEER JSON
 // =====================================================
 
 $datos = json_decode(
@@ -64,16 +62,17 @@ if (
 
 $email = trim($datos['email']);
 
-// IMPORTANTE:
-// Laravel también utiliza SHA1 actualmente.
-// Android envía la contraseña normal y PHP la convierte aquí.
+// El sistema actual utiliza SHA1.
 $password = sha1($datos['password']);
 
 // =====================================================
 // BUSCAR USUARIO
 // =====================================================
 
-// Solamente permitimos iniciar sesión a usuarios Activos.
+// Primero buscamos por credenciales.
+// NO filtramos estado aquí porque necesitamos distinguir
+// entre contraseña incorrecta y cuenta pendiente.
+
 $stmt = $conn->prepare("
     SELECT
         idUsuario,
@@ -85,7 +84,6 @@ $stmt = $conn->prepare("
     FROM usuarios
     WHERE email = ?
       AND password = ?
-      AND estado = 'Activo'
     LIMIT 1
 ");
 
@@ -95,31 +93,15 @@ $stmt->bind_param(
     $password
 );
 
-// Ejecutamos la consulta
 $stmt->execute();
 
-// Obtenemos el resultado
 $resultado = $stmt->get_result();
 
 // =====================================================
-// USUARIO ENCONTRADO
+// CREDENCIALES INCORRECTAS
 // =====================================================
 
-if ($resultado->num_rows > 0) {
-
-    $usuario = $resultado->fetch_assoc();
-
-    echo json_encode([
-        'success' => true,
-        'message' => 'Inicio de sesión correcto',
-        'usuario' => $usuario
-    ], JSON_UNESCAPED_UNICODE);
-
-} else {
-
-    // =================================================
-    // CREDENCIALES INCORRECTAS
-    // =================================================
+if ($resultado->num_rows === 0) {
 
     http_response_code(401);
 
@@ -127,7 +109,49 @@ if ($resultado->num_rows > 0) {
         'success' => false,
         'message' => 'Correo o contraseña incorrectos'
     ], JSON_UNESCAPED_UNICODE);
+
+    $stmt->close();
+    $conn->close();
+
+    exit;
 }
+
+// =====================================================
+// USUARIO ENCONTRADO
+// =====================================================
+
+$usuario = $resultado->fetch_assoc();
+
+// =====================================================
+// VALIDAR ESTADO
+// =====================================================
+
+if (
+    strtolower(trim($usuario['estado'])) !== 'activo'
+) {
+
+    http_response_code(403);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Tu cuenta está pendiente de aprobación por un administrador.'
+    ], JSON_UNESCAPED_UNICODE);
+
+    $stmt->close();
+    $conn->close();
+
+    exit;
+}
+
+// =====================================================
+// LOGIN CORRECTO
+// =====================================================
+
+echo json_encode([
+    'success' => true,
+    'message' => 'Inicio de sesión correcto',
+    'usuario' => $usuario
+], JSON_UNESCAPED_UNICODE);
 
 // =====================================================
 // CERRAR RECURSOS
