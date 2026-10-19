@@ -4,10 +4,9 @@
 // API - CREAR USUARIO
 // =====================================================
 
-// Indicamos que la respuesta será JSON
 header('Content-Type: application/json; charset=utf-8');
 
-// Solo permitimos peticiones POST
+// Solo permitimos POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     http_response_code(405);
@@ -20,14 +19,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-// Incluimos la conexión a la base de datos
+// Incluimos la conexión
 require_once __DIR__ . '/conexion.php';
 
-// Leemos los datos JSON enviados desde Android
+// Leemos los datos enviados
 $datos = json_decode(file_get_contents('php://input'), true);
 
 // =====================================================
-// VALIDACIÓN DE DATOS
+// VALIDACIÓN
 // =====================================================
 
 if (
@@ -48,40 +47,69 @@ if (
 }
 
 // =====================================================
-// DATOS RECIBIDOS
+// DATOS
 // =====================================================
 
-// Nombre del usuario
 $nombre = trim($datos['nombre']);
-
-// Correo electrónico
 $email = trim($datos['email']);
-
-// Teléfono opcional
 $telefono = $datos['telefono'] ?? null;
 
-// Rol recibido
-$rol = trim($datos['rol']);
+// IMPORTANTE:
+// El registro público desde Android solamente debe crear usuarios normales.
+$rol = 'Usuario';
 
-// Estado inicial del usuario
-$estado = 'Activo';
+// Toda cuenta registrada públicamente queda pendiente de aprobación.
+$estado = 'Inactivo';
+
+// =====================================================
+// VERIFICAR CORREO DUPLICADO
+// =====================================================
+
+$stmtCorreo = $conn->prepare("
+    SELECT idUsuario
+    FROM usuarios
+    WHERE email = ?
+    LIMIT 1
+");
+
+$stmtCorreo->bind_param(
+    's',
+    $email
+);
+
+$stmtCorreo->execute();
+
+$resultadoCorreo = $stmtCorreo->get_result();
+
+if ($resultadoCorreo->num_rows > 0) {
+
+    http_response_code(409);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Ya existe una cuenta registrada con este correo.'
+    ], JSON_UNESCAPED_UNICODE);
+
+    $stmtCorreo->close();
+    $conn->close();
+
+    exit;
+}
+
+$stmtCorreo->close();
 
 // =====================================================
 // CONTRASEÑA
 // =====================================================
 
-// IMPORTANTE:
-// La página web actualmente valida las contraseñas usando SHA1.
-// Por eso usamos el mismo formato aquí para que los usuarios
-// creados desde Android también puedan iniciar sesión en la web.
-
+// El sistema actual utiliza SHA1 tanto en Laravel como en la API.
+// Android envía la contraseña normal.
 $password = sha1($datos['password']);
 
 // =====================================================
 // INSERTAR USUARIO
 // =====================================================
 
-// Preparamos la consulta para evitar SQL Injection
 $stmt = $conn->prepare("
     INSERT INTO usuarios
     (
@@ -95,7 +123,6 @@ $stmt = $conn->prepare("
     VALUES (?, ?, ?, ?, ?, ?)
 ");
 
-// Asignamos los valores a la consulta
 $stmt->bind_param(
     'ssssss',
     $nombre,
@@ -106,10 +133,7 @@ $stmt->bind_param(
     $estado
 );
 
-// =====================================================
-// EJECUTAR CONSULTA
-// =====================================================
-
+// Ejecutamos
 if (!$stmt->execute()) {
 
     http_response_code(500);
@@ -119,22 +143,22 @@ if (!$stmt->execute()) {
         'message' => 'Error al crear usuario'
     ], JSON_UNESCAPED_UNICODE);
 
+    $stmt->close();
+    $conn->close();
+
     exit;
 }
 
 // =====================================================
-// RESPUESTA EXITOSA
+// RESPUESTA
 // =====================================================
 
 echo json_encode([
     'success' => true,
-    'message' => 'Usuario creado correctamente',
+    'message' => 'Cuenta creada correctamente. Tu cuenta está pendiente de aprobación por un administrador.',
     'idUsuario' => $stmt->insert_id
 ], JSON_UNESCAPED_UNICODE);
 
-// =====================================================
-// CERRAR RECURSOS
-// =====================================================
-
+// Cerramos recursos
 $stmt->close();
 $conn->close();
