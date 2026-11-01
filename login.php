@@ -1,16 +1,34 @@
+
 <?php
 
-// =====================================================
-// API - INICIO DE SESIÓN
-// =====================================================
+/*
+|--------------------------------------------------------------------------
+| COMUNIMAP - INICIO DE SESIÓN
+|--------------------------------------------------------------------------
+|
+| Mantiene el inicio de sesión actual.
+|
+| Nueva funcionalidad:
+| Si el usuario es un Administrador activo,
+| también genera un token firmado para autorizar
+| operaciones administrativas desde Android.
+|
+| No cambia las contraseñas existentes.
+| No modifica tablas de MySQL.
+|
+*/
 
 header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
 
 // =====================================================
 // VALIDAR MÉTODO HTTP
 // =====================================================
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+
+    header('Allow: POST');
 
     http_response_code(405);
 
@@ -23,13 +41,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =====================================================
-// CONEXIÓN A MYSQL
+// CARGAR ARCHIVOS NECESARIOS
 // =====================================================
 
 require_once __DIR__ . '/conexion.php';
+require_once __DIR__ . '/autenticacion_api.php';
 
 // =====================================================
-// LEER JSON
+// LEER DATOS ENVIADOS DESDE ANDROID
 // =====================================================
 
 $datos = json_decode(
@@ -38,12 +57,16 @@ $datos = json_decode(
 );
 
 // =====================================================
-// VALIDAR DATOS
+// VALIDAR CAMPOS
 // =====================================================
 
 if (
-    empty($datos['email']) ||
-    empty($datos['password'])
+    !is_array($datos) ||
+    !isset($datos['email'], $datos['password']) ||
+    !is_string($datos['email']) ||
+    !is_string($datos['password']) ||
+    trim($datos['email']) === '' ||
+    $datos['password'] === ''
 ) {
 
     http_response_code(400);
@@ -53,25 +76,24 @@ if (
         'message' => 'Correo y contraseña son obligatorios'
     ], JSON_UNESCAPED_UNICODE);
 
+    $conn->close();
     exit;
 }
 
 // =====================================================
-// DATOS DEL LOGIN
+// PREPARAR DATOS
 // =====================================================
 
 $email = trim($datos['email']);
 
-// El sistema actual utiliza SHA1.
+// Se conserva SHA-1 únicamente por compatibilidad
+// con las contraseñas actuales de ComuniMap.
+// La migración a password_hash será otra etapa.
 $password = sha1($datos['password']);
 
 // =====================================================
-// BUSCAR USUARIO
+// CONSULTAR USUARIO ACTIVO
 // =====================================================
-
-// Primero buscamos por credenciales.
-// NO filtramos estado aquí porque necesitamos distinguir
-// entre contraseña incorrecta y cuenta pendiente.
 
 $stmt = $conn->prepare("
     SELECT
@@ -84,8 +106,26 @@ $stmt = $conn->prepare("
     FROM usuarios
     WHERE email = ?
       AND password = ?
+      AND estado = 'Activo'
     LIMIT 1
 ");
+
+if (!$stmt) {
+
+    error_log(
+        'ComuniMap: Error al preparar consulta de login'
+    );
+
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'No se pudo iniciar sesión. Inténtalo nuevamente.'
+    ], JSON_UNESCAPED_UNICODE);
+
+    $conn->close();
+    exit;
+}
 
 $stmt->bind_param(
     'ss',
@@ -98,7 +138,7 @@ $stmt->execute();
 $resultado = $stmt->get_result();
 
 // =====================================================
-// CREDENCIALES INCORRECTAS
+// VALIDAR CREDENCIALES
 // =====================================================
 
 if ($resultado->num_rows === 0) {
@@ -117,45 +157,90 @@ if ($resultado->num_rows === 0) {
 }
 
 // =====================================================
-// USUARIO ENCONTRADO
+// INICIO DE SESIÓN CORRECTO
 // =====================================================
 
 $usuario = $resultado->fetch_assoc();
 
-// =====================================================
-// VALIDAR ESTADO
-// =====================================================
+$stmt->close();
 
-if (
-    strtolower(trim($usuario['estado'])) !== 'activo'
-) {
-
-    http_response_code(403);
-
-    echo json_encode([
-        'success' => false,
-        'message' => 'Tu cuenta está pendiente de aprobación por un administrador.'
-    ], JSON_UNESCAPED_UNICODE);
-
-    $stmt->close();
-    $conn->close();
-
-    exit;
-}
-
-// =====================================================
-// LOGIN CORRECTO
-// =====================================================
-
-echo json_encode([
+// Mantener la respuesta conocida por Android.
+$respuesta = [
     'success' => true,
     'message' => 'Inicio de sesión correcto',
     'usuario' => $usuario
-], JSON_UNESCAPED_UNICODE);
+];
 
 // =====================================================
-// CERRAR RECURSOS
+// TOKEN SOLO PARA ADMINISTRADORES ACTIVOS
 // =====================================================
 
-$stmt->close();
+// Se verifican espacios y mayúsculas/minúsculas.
+$esAdministrador = (
+    strcasecmp(
+        trim((string) $usuario['rol']),
+        'Administrador'
+    ) === 0
+);
+
+$estaActivo = (
+    strcasecmp(
+        trim((string) $usuario['estado']),
+        'Activo'
+    ) === 0
+);
+
+if ($esAdministrador && $estaActivo) {
+
+    try {
+
+        // Esta función está definida en
+        // autenticacion_api.php
+        $token = cmCrearToken(
+            (int) $usuario['idUsuario']
+        );
+
+        // Campo adicional para Android.
+        // No se reemplaza el objeto usuario.
+        $respuesta['tokenApi'] = $token;
+
+    } catch (Throwable $e) {
+
+        // No revelar la clave ni detalles internos.
+        error_log(
+            'ComuniMap: No se pudo generar el token '
+            . 'administrativo: '
+            . $e->getMessage()
+        );
+
+        http_response_code(500);
+
+        echo json_encode([
+            'success' => false,
+            'message' =>
+                'No se pudo completar el inicio de sesión '
+                . 'administrativo. Inténtalo nuevamente.'
+        ], JSON_UNESCAPED_UNICODE);
+
+        $conn->close();
+
+        exit;
+    }
+}
+
+// =====================================================
+// RESPONDER AL CLIENTE
+// =====================================================
+
+http_response_code(200);
+
+echo json_encode(
+    $respuesta,
+    JSON_UNESCAPED_UNICODE
+);
+
+// =====================================================
+// CERRAR CONEXIÓN
+// =====================================================
+
 $conn->close();
