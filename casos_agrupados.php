@@ -3,34 +3,21 @@
 
 /*
 |--------------------------------------------------------------------------
-| COMUNIMAP - CONSULTAR CASOS AGRUPADOS
+| COMUNIMAP - CONSULTA DE CASOS AGRUPADOS
 |--------------------------------------------------------------------------
 |
-| Endpoint de solo lectura para Android.
-|
-| Devuelve:
-| - Casos de prioridad Alta.
-| - Casos de prioridad Media.
-| - Casos de prioridad Baja.
-| - Cantidad de vecinos distintos.
-| - Cantidad de reportes agrupados.
-| - Información general del problema.
-|
-| No devuelve nombres de vecinos ni identificadores
-| internos de todos los integrantes del grupo.
-|
-| No cambia estados ni modifica la base de datos.
+| Endpoint de solo lectura.
+| Devuelve los casos de prioridad Alta, Media y Baja.
+| No modifica reportes ni expone nombres de vecinos.
 |
 */
 
+// Configurar encabezados de respuesta.
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('X-Content-Type-Options: nosniff');
 
-// =====================================================
-// VALIDAR MÉTODO HTTP
-// =====================================================
-
+// Permitir únicamente solicitudes GET.
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 
     header('Allow: GET');
@@ -45,24 +32,16 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit;
 }
 
-// =====================================================
-// CONECTAR CON MYSQL
-// =====================================================
-
+// Cargar conexión y funciones de agrupación.
 require_once __DIR__ . '/conexion.php';
-
-// =====================================================
-// IMPORTAR LÓGICA DE AGRUPACIÓN
-// =====================================================
-
 require_once __DIR__ . '/casos_agrupados_lib.php';
 
 try {
 
-    // Obtener los grupos calculados por la biblioteca.
+    // Consultar los casos agrupados.
     $grupos = cmObtenerCasosAgrupados($conn);
 
-    // Preparar respuesta pública sin datos personales.
+    // Estructura de respuesta.
     $casos = [
         'alta' => [],
         'media' => [],
@@ -74,69 +53,42 @@ try {
         foreach ($grupos[$nivel] as $grupo) {
 
             $casos[$nivel][] = [
-                'idReporte' =>
-                    (int) $grupo['idReporte'],
-
-                'titulo' =>
-                    $grupo['titulo'],
-
-                'categoria' =>
-                    $grupo['categoria'],
-
-                'idCategoria' =>
-                    (int) $grupo['idCategoria'],
-
-                'direccion' =>
-                    $grupo['direccion'],
-
-                'cantidadVecinos' =>
-                    (int) $grupo['cantidadVecinos'],
-
-                'cantidadReportes' =>
-                    (int) $grupo['cantidadReportes'],
-
-                'prioridad' =>
-                    $grupo['prioridad']
+                'idReporte' => (int) $grupo['idReporte'],
+                'titulo' => $grupo['titulo'],
+                'categoria' => $grupo['categoria'],
+                'idCategoria' => (int) $grupo['idCategoria'],
+                'direccion' => $grupo['direccion'],
+                'cantidadVecinos' => (int) $grupo['cantidadVecinos'],
+                'cantidadReportes' => (int) $grupo['cantidadReportes'],
+                'prioridad' => $grupo['prioridad']
             ];
         }
     }
 
-    // =================================================
-    // CONTAR CASOS POR PRIORIDAD
-    // =================================================
-
+    // Contar grupos de cada prioridad.
     $totalAlta = count($casos['alta']);
     $totalMedia = count($casos['media']);
     $totalBaja = count($casos['baja']);
 
     $total = $totalAlta + $totalMedia + $totalBaja;
 
-    // =================================================
-    // DEVOLVER RESPUESTA
-    // =================================================
-
+    // Responder con JSON válido.
     http_response_code(200);
 
     echo json_encode([
         'success' => true,
-
         'message' => 'Casos agrupados obtenidos correctamente',
-
         'total' => $total,
-
         'totales' => [
             'alta' => $totalAlta,
             'media' => $totalMedia,
             'baja' => $totalBaja
         ],
-
         'casos' => $casos
-
     ], JSON_UNESCAPED_UNICODE);
 
 } catch (Throwable $e) {
 
-    // No mostrar detalles internos de MySQL al cliente.
     error_log(
         'Error en casos_agrupados.php: ' .
         $e->getMessage()
@@ -150,8 +102,5 @@ try {
     ], JSON_UNESCAPED_UNICODE);
 }
 
-// =====================================================
-// CERRAR CONEXIÓN
-// =====================================================
-
+// Cerrar conexión.
 $conn->close();
