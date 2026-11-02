@@ -218,6 +218,43 @@ if (!$stmt->execute()) {
     exit;
 }
 
+// AVISAR A TODOS LOS ADMINISTRADORES ACTIVOS (NO USAR IDs FIJOS)
+$idReporteCreado = (int) $stmt->insert_id;
+try {
+    require_once __DIR__ . '/enviar_notificacion_push.php';
+    $listaAdmins = $conn->query("SELECT idUsuario FROM usuarios WHERE rol = 'Administrador' AND estado = 'Activo'");
+    if (!$listaAdmins) throw new Exception('Error consultando administradores');
+    $avisoTitulo = 'Nuevo reporte';
+    $avisoMensaje = substr('Nuevo reporte registrado: ' . $titulo, 0, 255);
+    $avisoTipo = 'NUEVO_REPORTE';
+    $insertAviso = $conn->prepare("INSERT INTO notificaciones (idUsuario,idReporte,titulo,mensaje,tipo,leida) VALUES (?,?,?,?,?,0)");
+    $consultaTokens = $conn->prepare("SELECT token FROM dispositivos_fcm WHERE idUsuario = ?");
+    if (!$insertAviso || !$consultaTokens) throw new Exception('Error preparando avisos');
+    while ($admin = $listaAdmins->fetch_assoc()) {
+        $idAdmin = (int) $admin['idUsuario'];
+        if ($idAdmin === $idUsuario) continue;
+        $insertAviso->bind_param('iisss', $idAdmin, $idReporteCreado, $avisoTitulo, $avisoMensaje, $avisoTipo);
+        if (!$insertAviso->execute()) {
+            error_log('ComuniMap: error guardando aviso para administrador ' . $idAdmin);
+            continue;
+        }
+        $consultaTokens->bind_param('i', $idAdmin);
+        if (!$consultaTokens->execute()) continue;
+        $tokens = $consultaTokens->get_result();
+        while ($fila = $tokens->fetch_assoc()) {
+            if (empty($fila['token'])) continue;
+            $push = enviarNotificacionPush($fila['token'], $avisoTitulo, $avisoMensaje, [
+                'tipo' => $avisoTipo, 'idReporte' => $idReporteCreado
+            ]);
+            if (empty($push['success'])) error_log('ComuniMap: push falló para administrador ' . $idAdmin);
+        }
+    }
+    $insertAviso->close();
+    $consultaTokens->close();
+} catch (Throwable $e) {
+    error_log('ComuniMap: error al notificar nuevo reporte: ' . $e->getMessage());
+}
+
 // =====================================================
 // RESPUESTA
 // =====================================================
@@ -225,7 +262,7 @@ if (!$stmt->execute()) {
 echo json_encode([
     'success' => true,
     'message' => 'Reporte registrado correctamente',
-    'idReporte' => $stmt->insert_id
+    'idReporte' => $idReporteCreado
 ], JSON_UNESCAPED_UNICODE);
 
 // =====================================================
