@@ -1,56 +1,57 @@
+
 <?php
 
 /*
 |--------------------------------------------------------------------------
-| COMUNIMAP - AUTENTICACIÓN DE LA API
+| COMUNIMAP - AUTENTICACIÓN SEGURA DE LA API
 |--------------------------------------------------------------------------
 |
-| Este archivo permite:
+| Funciones:
+| 1. Crear tokens firmados para administradores.
+| 2. Leer Authorization en diferentes configuraciones Apache.
+| 3. Comprobar firma y vencimiento del token.
+| 4. Verificar Administrador y Activo en MySQL.
 |
-| 1. Crear un token firmado para un usuario autenticado.
-| 2. Verificar que el token sea auténtico.
-| 3. Comprobar que el usuario sea Administrador y esté Activo.
-|
-| No modifica la base de datos.
-| No crea sesiones en MySQL.
-| No cambia el inicio de sesión actual.
+| No modifica tablas ni datos.
+| No muestra tokens o claves en los registros.
 |
 */
 
 // =====================================================
-// CODIFICACIÓN SEGURA PARA EL TOKEN
+// CODIFICACIÓN BASE64 URL
 // =====================================================
 
 function cmCodificarBase64Url(string $texto): string
 {
     return rtrim(
-        strtr(
-            base64_encode($texto),
-            '+/',
-            '-_'
-        ),
+        strtr(base64_encode($texto), '+/', '-_'),
         '='
     );
 }
 
 function cmDecodificarBase64Url(string $texto)
 {
-    $texto = strtr($texto, '-_', '+/');
+    if (
+        $texto === '' ||
+        !preg_match('/^[A-Za-z0-9_-]+$/', $texto)
+    ) {
+        return false;
+    }
 
     $relleno = strlen($texto) % 4;
 
     if ($relleno !== 0) {
-        $texto .= str_repeat(
-            '=',
-            4 - $relleno
-        );
+        $texto .= str_repeat('=', 4 - $relleno);
     }
 
-    return base64_decode($texto, true);
+    return base64_decode(
+        strtr($texto, '-_', '+/'),
+        true
+    );
 }
 
 // =====================================================
-// OBTENER CLAVE PRIVADA DESDE RAILWAY
+// CLAVE PRIVADA DE RAILWAY
 // =====================================================
 
 function cmObtenerClaveApi(): string
@@ -70,20 +71,19 @@ function cmObtenerClaveApi(): string
 }
 
 // =====================================================
-// CREAR TOKEN DESPUÉS DE UN LOGIN CORRECTO
+// CREAR TOKEN DE ADMINISTRADOR
 // =====================================================
 
 function cmCrearToken(int $idUsuario): string
 {
     if ($idUsuario <= 0) {
         throw new InvalidArgumentException(
-            'Identificador de usuario no válido'
+            'Identificador de usuario inválido'
         );
     }
 
     $ahora = time();
 
-    // Duración del token: 12 horas.
     $datos = [
         'idUsuario' => $idUsuario,
         'emitido' => $ahora,
@@ -105,36 +105,107 @@ function cmCrearToken(int $idUsuario): string
         true
     );
 
-    return $contenido
-        . '.'
-        . cmCodificarBase64Url($firma);
+    return $contenido . '.' .
+        cmCodificarBase64Url($firma);
 }
 
 // =====================================================
-// OBTENER TOKEN ENVIADO POR ANDROID
+// OBTENER CABECERA AUTHORIZATION
+// =====================================================
+
+function cmObtenerCabeceraAutorizacion(): string
+{
+    // Método habitual en PHP.
+    $posibles = [
+        $_SERVER['HTTP_AUTHORIZATION'] ?? null,
+        $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null,
+    ];
+
+    foreach ($posibles as $valor) {
+        if (
+            is_string($valor) &&
+            trim($valor) !== ''
+        ) {
+            return trim($valor);
+        }
+    }
+
+    // Algunos servidores entregan la cabecera aquí.
+    if (function_exists('getallheaders')) {
+
+        $cabeceras = getallheaders();
+
+        if (is_array($cabeceras)) {
+
+            foreach ($cabeceras as $nombre => $valor) {
+
+                if (
+                    strcasecmp(
+                        (string) $nombre,
+                        'Authorization'
+                    ) === 0 &&
+                    is_string($valor)
+                ) {
+                    return trim($valor);
+                }
+            }
+        }
+    }
+
+    // Compatibilidad adicional con Apache.
+    if (function_exists('apache_request_headers')) {
+
+        $cabeceras = apache_request_headers();
+
+        if (is_array($cabeceras)) {
+
+            foreach ($cabeceras as $nombre => $valor) {
+
+                if (
+                    strcasecmp(
+                        (string) $nombre,
+                        'Authorization'
+                    ) === 0 &&
+                    is_string($valor)
+                ) {
+                    return trim($valor);
+                }
+            }
+        }
+    }
+
+    return '';
+}
+
+// =====================================================
+// LEER TOKEN EN FORMATO BEARER
 // =====================================================
 
 function cmLeerTokenPeticion(): ?string
 {
-    $cabecera =
-        $_SERVER['HTTP_AUTHORIZATION']
-        ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-        ?? '';
+    $cabecera = cmObtenerCabeceraAutorizacion();
 
-    if (!is_string($cabecera)) {
+    if ($cabecera === '') {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'No llegó la cabecera Authorization.'
+        );
+
         return null;
     }
-
-    // Formato esperado:
-    // Authorization: Bearer TOKEN
 
     if (
         !preg_match(
             '/^Bearer\s+([A-Za-z0-9._-]+)$/i',
-            trim($cabecera),
+            $cabecera,
             $coincidencias
         )
     ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Formato de Authorization no válido.'
+        );
+
         return null;
     }
 
@@ -142,38 +213,53 @@ function cmLeerTokenPeticion(): ?string
 }
 
 // =====================================================
-// VALIDAR FIRMA Y FECHA DEL TOKEN
+// VALIDAR FIRMA Y CADUCIDAD
 // =====================================================
 
 function cmValidarToken(?string $token): ?int
 {
+    if ($token === null) {
+        return null;
+    }
+
     if (
-        $token === null ||
+        $token === '' ||
         strlen($token) > 4096
     ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Longitud del token no válida.'
+        );
+
         return null;
     }
 
     $partes = explode('.', $token);
 
     if (count($partes) !== 2) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Estructura del token no válida.'
+        );
+
         return null;
     }
 
     [$contenido, $firmaRecibida] = $partes;
 
-    if (
-        $contenido === '' ||
-        $firmaRecibida === ''
-    ) {
-        return null;
-    }
-
     $firmaBinaria = cmDecodificarBase64Url(
         $firmaRecibida
     );
 
-    if ($firmaBinaria === false) {
+    if (
+        $firmaBinaria === false ||
+        strlen($firmaBinaria) !== 32
+    ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Firma del token mal formada.'
+        );
+
         return null;
     }
 
@@ -190,6 +276,11 @@ function cmValidarToken(?string $token): ?int
             $firmaBinaria
         )
     ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'La firma del token no coincide.'
+        );
+
         return null;
     }
 
@@ -229,8 +320,13 @@ function cmValidarToken(?string $token): ?int
         $emitido > $ahora ||
         $expira <= $ahora ||
         $expira <= $emitido ||
-        ($expira - $emitido) > (12 * 60 * 60)
+        ($expira - $emitido) > 43200
     ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Token caducado o fechas inválidas.'
+        );
+
         return null;
     }
 
@@ -238,13 +334,14 @@ function cmValidarToken(?string $token): ?int
 }
 
 // =====================================================
-// RESPONDER CUANDO NO EXISTEN PERMISOS
+// RESPUESTA DE ACCESO DENEGADO
 // =====================================================
 
 function cmRechazarAcceso(
     int $codigo,
     string $mensaje
-): void {
+): void
+{
     http_response_code($codigo);
 
     header(
@@ -278,7 +375,6 @@ function cmExigirAdministrador(mysqli $conn): int
         );
     }
 
-    // Comprobar los permisos actuales en MySQL.
     $consulta = $conn->prepare("
         SELECT
             rol,
@@ -290,14 +386,11 @@ function cmExigirAdministrador(mysqli $conn): int
 
     if (!$consulta) {
         throw new RuntimeException(
-            'No se pudo comprobar el usuario'
+            'No se pudo comprobar la cuenta'
         );
     }
 
-    $consulta->bind_param(
-        'i',
-        $idUsuario
-    );
+    $consulta->bind_param('i', $idUsuario);
 
     $consulta->execute();
 
@@ -310,35 +403,27 @@ function cmExigirAdministrador(mysqli $conn): int
     if (!$usuario) {
         cmRechazarAcceso(
             401,
-            'La sesión ya no corresponde a un usuario válido.'
+            'El usuario de la sesión ya no existe.'
         );
     }
 
-    $rol = trim(
-        (string) $usuario['rol']
-    );
-
-    $estado = trim(
-        (string) $usuario['estado']
-    );
+    $rol = trim((string) $usuario['rol']);
+    $estado = trim((string) $usuario['estado']);
 
     if (
-        strcasecmp(
-            $rol,
-            'Administrador'
-        ) !== 0
-        ||
-        strcasecmp(
-            $estado,
-            'Activo'
-        ) !== 0
+        strcasecmp($rol, 'Administrador') !== 0 ||
+        strcasecmp($estado, 'Activo') !== 0
     ) {
+        error_log(
+            'ComuniMap autenticación: ' .
+            'Cuenta sin permisos administrativos.'
+        );
+
         cmRechazarAcceso(
             403,
-            'No tienes permisos para realizar esta operación.'
+            'No tienes permisos para esta operación.'
         );
     }
 
-    // La petición pertenece a un administrador activo.
     return $idUsuario;
 }
