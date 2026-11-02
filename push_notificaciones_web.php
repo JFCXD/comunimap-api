@@ -67,7 +67,7 @@ try {
             tipo
         FROM notificaciones
         WHERE idNotificacion = ?
-          AND tipo IN ('EN_PROCESO', 'SOLUCIONADO')
+          AND tipo IN ('EN_PROCESO', 'SOLUCIONADO', 'NUEVO_REPORTE')
           AND fecha >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
         LIMIT 1
     ");
