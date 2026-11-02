@@ -2,22 +2,18 @@
 
 /*
 |--------------------------------------------------------------------------
-| COMUNIMAP - ACTUALIZAR ESTADO DE CASO AGRUPADO
+| COMUNIMAP - ACTUALIZAR ESTADO DE CASOS AGRUPADOS
 |--------------------------------------------------------------------------
 |
-| Cambia el estado de todos los reportes pertenecientes
-| a un caso comunitario agrupado.
+| Funciones:
+| - Comprobar la autenticación del administrador.
+| - Recalcular el grupo usando la biblioteca existente.
+| - Actualizar únicamente los reportes cuyo estado cambie.
+| - Registrar notificaciones internas para cada propietario.
+| - Enviar notificaciones Firebase después de guardar.
 |
-| Reglas:
-| - Solo administradores activos autenticados.
-| - Misma categoría.
-| - Distancia máxima de 5 metros.
-| - Reportes no solucionados.
-| - Dos o más vecinos diferentes.
-| - Una sola transacción para todo el grupo.
-|
-| No modifica prioridad, imágenes ni otros datos.
-| No envía notificaciones en esta etapa.
+| No modifica las prioridades ni las coordenadas.
+| No crea nuevas tablas.
 |
 */
 
@@ -26,13 +22,12 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
 // =====================================================
-// PERMITIR ÚNICAMENTE POST
+// VALIDAR MÉTODO HTTP
 // =====================================================
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
     header('Allow: POST');
-
     http_response_code(405);
 
     echo json_encode([
@@ -44,33 +39,28 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =====================================================
-// CARGAR ARCHIVOS
+// CARGAR ARCHIVOS EXISTENTES
 // =====================================================
 
 require_once __DIR__ . '/conexion.php';
 require_once __DIR__ . '/autenticacion_api.php';
 require_once __DIR__ . '/casos_agrupados_lib.php';
+require_once __DIR__ . '/enviar_notificacion_push.php';
 
 // =====================================================
-// COMPROBAR ADMINISTRADOR ACTIVO
+// COMPROBAR ADMINISTRADOR
 // =====================================================
 
-// La función valida el token enviado por Android
-// y consulta el rol y estado reales en MySQL.
 cmExigirAdministrador($conn);
 
 // =====================================================
-// LEER DATOS JSON
+// LEER Y VALIDAR DATOS
 // =====================================================
 
 $datos = json_decode(
     file_get_contents('php://input'),
     true
 );
-
-// =====================================================
-// VALIDAR DATOS RECIBIDOS
-// =====================================================
 
 if (!is_array($datos)) {
 
@@ -94,6 +84,7 @@ $estado = $datos['estado'] ?? null;
 
 if (
     $idReporte === false ||
+    $idReporte === null ||
     !is_string($estado)
 ) {
 
@@ -128,10 +119,47 @@ if (!in_array($estado, $estadosPermitidos, true)) {
 }
 
 // =====================================================
-// INICIAR ACTUALIZACIÓN SEGURA
+// PREPARAR MENSAJES DE NOTIFICACIÓN
+// =====================================================
+
+$tituloNotificacion = '';
+$mensajeNotificacion = '';
+$tipoNotificacion = '';
+
+if ($estado === 'En Proceso') {
+
+    $tituloNotificacion = 'Reporte en proceso';
+
+    $mensajeNotificacion =
+        'Tu reporte está siendo atendido.';
+
+    $tipoNotificacion = 'CAMBIO_ESTADO';
+
+} elseif ($estado === 'Solucionado') {
+
+    $tituloNotificacion = 'Reporte solucionado';
+
+    $mensajeNotificacion =
+        'Tu reporte ha sido solucionado.';
+
+    $tipoNotificacion = 'CAMBIO_ESTADO';
+}
+
+// =====================================================
+// INICIAR OPERACIÓN
 // =====================================================
 
 $transaccionIniciada = false;
+
+$notificacionesParaEnviar = [];
+
+$cantidadActualizada = 0;
+
+$cantidadNotificaciones = 0;
+
+$cantidadVecinos = 0;
+
+$cantidadReportesGrupo = 0;
 
 try {
 
@@ -140,12 +168,11 @@ try {
     $transaccionIniciada = true;
 
     /*
-     * Bloquear los reportes existentes durante
-     * la comprobación y actualización.
-     *
-     * De esta manera evitamos que otra operación
-     * modifique esos registros simultáneamente.
+     * Bloquear reportes existentes para evitar
+     * actualizaciones simultáneas mientras se
+     * recalcula y modifica el grupo.
      */
+
     $bloqueo = $conn->query("
         SELECT idReporte
         FROM reportes
@@ -161,10 +188,10 @@ try {
 
     $bloqueo->free();
 
-    // Obtener los reportes actuales.
+    // Obtener reportes actuales.
     $todosReportes = cmConsultarReportes($conn);
 
-    // Recalcular los grupos en el servidor.
+    // Recalcular los grupos reales.
     $grupos = cmAgruparCasos($todosReportes);
 
     $grupoSeleccionado = null;
@@ -175,20 +202,17 @@ try {
             (int) $grupo['idReporte'] ===
             (int) $idReporte
         ) {
-
             $grupoSeleccionado = $grupo;
-
             break;
         }
     }
 
     /*
-     * No confiar en los IDs de integrantes
-     * que pudiera enviar un cliente.
-     *
-     * La biblioteca calcula nuevamente el grupo
-     * según los datos actuales de MySQL.
+     * El cliente solo envía el identificador
+     * representativo. La API decide qué reportes
+     * pertenecen realmente al grupo.
      */
+
     if ($grupoSeleccionado === null) {
 
         $conn->rollback();
@@ -199,10 +223,11 @@ try {
         echo json_encode([
             'success' => false,
             'message' =>
-                'Este caso agrupado cambió o ya no existe. '
+                'Este caso cambió o ya no existe. '
                 . 'Actualiza la lista e inténtalo nuevamente.'
         ], JSON_UNESCAPED_UNICODE);
 
+        $conn->close();
         exit;
     }
 
@@ -215,9 +240,15 @@ try {
         )
     );
 
+    $cantidadVecinos =
+        (int) $grupoSeleccionado['cantidadVecinos'];
+
+    $cantidadReportesGrupo =
+        count($idsReportes);
+
     if (
-        count($idsReportes) < 2 ||
-        (int) $grupoSeleccionado['cantidadVecinos'] < 2
+        $cantidadVecinos < 2 ||
+        $cantidadReportesGrupo < 2
     ) {
 
         $conn->rollback();
@@ -232,100 +263,175 @@ try {
                 . 'reportes coincidentes.'
         ], JSON_UNESCAPED_UNICODE);
 
+        $conn->close();
         exit;
     }
 
     // =================================================
-    // PREPARAR ACTUALIZACIÓN GRUPAL
+    // CONSULTAS PREPARADAS
     // =================================================
 
-    /*
-     * Crear tantos marcadores ? como reportes
-     * pertenezcan al grupo.
-     */
-    $marcadores = implode(
-        ',',
-        array_fill(
-            0,
-            count($idsReportes),
-            '?'
-        )
-    );
-
-    $sql = "
+    $actualizarReporte = $conn->prepare("
         UPDATE reportes
         SET estado = ?
-        WHERE idReporte IN ($marcadores)
-    ";
+        WHERE idReporte = ?
+    ");
 
-    $consulta = $conn->prepare($sql);
-
-    if (!$consulta) {
+    if (!$actualizarReporte) {
         throw new RuntimeException(
             'No se pudo preparar la actualización'
         );
     }
 
+    $actualizarReporte->bind_param(
+        'si',
+        $estadoParaGuardar,
+        $idParaActualizar
+    );
+
     /*
-     * Primer parámetro: estado.
-     * Siguientes parámetros: IDs de reportes.
+     * Las notificaciones internas se guardan
+     * en la misma tabla que ya usa ComuniMap.
+     *
+     * Se utiliza una fila por reporte afectado.
      */
-    $tipos = 's' . str_repeat(
-        'i',
-        count($idsReportes)
-    );
 
-    $parametros = array_merge(
-        [$estado],
-        $idsReportes
-    );
+    $insertarNotificacion = $conn->prepare("
+        INSERT INTO notificaciones
+        (
+            idUsuario,
+            idReporte,
+            titulo,
+            mensaje,
+            tipo,
+            leida
+        )
+        VALUES (?, ?, ?, ?, ?, 0)
+    ");
 
-    $consulta->bind_param(
-        $tipos,
-        ...$parametros
-    );
-
-    if (!$consulta->execute()) {
-
-        $consulta->close();
-
+    if (!$insertarNotificacion) {
         throw new RuntimeException(
-            'No se pudo actualizar el grupo'
+            'No se pudo preparar la notificación'
         );
     }
 
-    $consulta->close();
+    $insertarNotificacion->bind_param(
+        'iisss',
+        $idDestinatario,
+        $idNotificacionReporte,
+        $tituloParaNotificacion,
+        $mensajeParaNotificacion,
+        $tipoParaNotificacion
+    );
 
-    // Guardar todos los cambios juntos.
+    $idsDelGrupo = array_fill_keys(
+        $idsReportes,
+        true
+    );
+
+    // =================================================
+    // RECORRER LOS REPORTES DEL GRUPO
+    // =================================================
+
+    foreach ($todosReportes as $reporte) {
+
+        $idActual = (int) $reporte['idReporte'];
+
+        if (!isset($idsDelGrupo[$idActual])) {
+            continue;
+        }
+
+        $estadoAnterior = trim(
+            (string) ($reporte['estado'] ?? '')
+        );
+
+        /*
+         * No generar cambios ni notificaciones
+         * para reportes que ya tienen ese estado.
+         */
+
+        if (
+            strcasecmp(
+                $estadoAnterior,
+                $estado
+            ) === 0
+        ) {
+            continue;
+        }
+
+        // ---------------------------------------------
+        // ACTUALIZAR ESTADO
+        // ---------------------------------------------
+
+        $idParaActualizar = $idActual;
+        $estadoParaGuardar = $estado;
+
+        if (!$actualizarReporte->execute()) {
+            throw new RuntimeException(
+                'No se pudo actualizar un reporte'
+            );
+        }
+
+        $cantidadActualizada++;
+
+        /*
+         * Pendiente no genera aviso en esta etapa.
+         */
+
+        if ($estado === 'Pendiente') {
+            continue;
+        }
+
+        // ---------------------------------------------
+        // REGISTRAR NOTIFICACIÓN INTERNA
+        // ---------------------------------------------
+
+        $idDestinatario =
+            (int) $reporte['idUsuario'];
+
+        $idNotificacionReporte = $idActual;
+
+        $tituloParaNotificacion =
+            $tituloNotificacion;
+
+        $mensajeParaNotificacion =
+            $mensajeNotificacion;
+
+        $tipoParaNotificacion =
+            $tipoNotificacion;
+
+        if (!$insertarNotificacion->execute()) {
+            throw new RuntimeException(
+                'No se pudo guardar una notificación'
+            );
+        }
+
+        $cantidadNotificaciones++;
+
+        /*
+         * Guardar la información necesaria para
+         * enviar Firebase después del commit.
+         */
+
+        $notificacionesParaEnviar[] = [
+            'idUsuario' => $idDestinatario,
+            'idReporte' => $idActual,
+            'titulo' => $tituloNotificacion,
+            'mensaje' => $mensajeNotificacion,
+            'tipo' => $tipoNotificacion
+        ];
+    }
+
+    $actualizarReporte->close();
+    $insertarNotificacion->close();
+
+    // =================================================
+    // CONFIRMAR ESTADOS Y NOTIFICACIONES INTERNAS
+    // =================================================
+
     $conn->commit();
 
     $transaccionIniciada = false;
-
-    // =================================================
-    // RESPONDER A ANDROID
-    // =================================================
-
-    http_response_code(200);
-
-    echo json_encode([
-        'success' => true,
-
-        'message' =>
-            'Estado del caso agrupado actualizado '
-            . 'correctamente',
-
-        'idReporte' =>
-            (int) $idReporte,
-
-        'estado' => $estado,
-
-        'cantidadReportes' =>
-            count($idsReportes),
-
-        'cantidadVecinos' =>
-            (int) $grupoSeleccionado['cantidadVecinos']
-
-    ], JSON_UNESCAPED_UNICODE);
 
 } catch (Throwable $e) {
 
@@ -334,17 +440,17 @@ try {
         try {
             $conn->rollback();
         } catch (Throwable $errorRollback) {
+
             error_log(
-                'Error al revertir transacción: '
-                . $errorRollback->getMessage()
+                'ComuniMap: error al revertir grupo: ' .
+                $errorRollback->getMessage()
             );
         }
     }
 
-    // Registrar detalles únicamente en el servidor.
     error_log(
-        'Error al actualizar estado grupal: '
-        . $e->getMessage()
+        'ComuniMap: error en estado grupal: ' .
+        $e->getMessage()
     );
 
     http_response_code(500);
@@ -355,10 +461,151 @@ try {
             'No se pudo actualizar el estado del caso. '
             . 'Inténtalo nuevamente.'
     ], JSON_UNESCAPED_UNICODE);
+
+    $conn->close();
+    exit;
 }
 
 // =====================================================
-// CERRAR CONEXIÓN
+// ENVIAR NOTIFICACIONES PUSH DESPUÉS DEL COMMIT
 // =====================================================
+
+$cantidadPushExitosos = 0;
+
+foreach (
+    $notificacionesParaEnviar
+    as $notificacion
+) {
+
+    try {
+
+        // Obtener dispositivos del propietario.
+        $consultaTokens = $conn->prepare("
+            SELECT token
+            FROM dispositivos_fcm
+            WHERE idUsuario = ?
+            ORDER BY fechaActualizacion DESC
+        ");
+
+        if (!$consultaTokens) {
+            throw new RuntimeException(
+                'No se pudieron consultar los dispositivos'
+            );
+        }
+
+        $idDestinatarioPush =
+            (int) $notificacion['idUsuario'];
+
+        $consultaTokens->bind_param(
+            'i',
+            $idDestinatarioPush
+        );
+
+        if (!$consultaTokens->execute()) {
+            throw new RuntimeException(
+                'No se pudieron consultar los tokens FCM'
+            );
+        }
+
+        $resultadoTokens =
+            $consultaTokens->get_result();
+
+        while (
+            $filaToken = $resultadoTokens->fetch_assoc()
+        ) {
+
+            $tokenDispositivo = trim(
+                (string) $filaToken['token']
+            );
+
+            if ($tokenDispositivo === '') {
+                continue;
+            }
+
+            /*
+             * Reutilizar la misma función Firebase
+             * que usa crear_reporte.php.
+             */
+
+            $resultadoPush = enviarNotificacionPush(
+                $tokenDispositivo,
+                $notificacion['titulo'],
+                $notificacion['mensaje'],
+                [
+                    'tipo' => $notificacion['tipo'],
+                    'idReporte' =>
+                        (int) $notificacion['idReporte']
+                ]
+            );
+
+            if (
+                is_array($resultadoPush) &&
+                !empty($resultadoPush['success'])
+            ) {
+
+                $cantidadPushExitosos++;
+
+            } else {
+
+                error_log(
+                    'ComuniMap: Firebase no confirmó '
+                    . 'el envío del reporte '
+                    . $notificacion['idReporte']
+                );
+            }
+        }
+
+        $consultaTokens->close();
+
+    } catch (Throwable $e) {
+
+        /*
+         * Firebase no debe revertir los estados
+         * ni las notificaciones internas.
+         */
+
+        error_log(
+            'ComuniMap: error enviando Firebase '
+            . 'para el reporte '
+            . $notificacion['idReporte']
+            . ': '
+            . $e->getMessage()
+        );
+    }
+}
+
+// =====================================================
+// RESPUESTA FINAL PARA ANDROID
+// =====================================================
+
+http_response_code(200);
+
+echo json_encode([
+    'success' => true,
+
+    'message' =>
+        'Estado del caso agrupado actualizado '
+        . 'correctamente',
+
+    'idReporte' => (int) $idReporte,
+
+    'estado' => $estado,
+
+    'cantidadReportes' =>
+        $cantidadReportesGrupo,
+
+    'cantidadVecinos' =>
+        $cantidadVecinos,
+
+    'reportesActualizados' =>
+        $cantidadActualizada,
+
+    'notificacionesInternas' =>
+        $cantidadNotificaciones,
+
+    'enviosPushExitosos' =>
+        $cantidadPushExitosos
+
+], JSON_UNESCAPED_UNICODE);
 
 $conn->close();
