@@ -131,6 +131,22 @@ if ($latitud === null || $longitud === null) {
 }
 
 // =====================================================
+// VALIDAR QUE LA UBICACIÓN PERTENEZCA A LA OTB
+// =====================================================
+
+require_once __DIR__ . '/validar_otb.php';
+
+if (!puntoDentroOTB($latitud, $longitud)) {
+    http_response_code(422);
+    echo json_encode([
+        'success' => false,
+        'message' => 'La ubicación debe estar dentro de los límites de la OTB.'
+    ], JSON_UNESCAPED_UNICODE);
+    $conn->close();
+    exit;
+}
+
+// =====================================================
 // INSERTAR REPORTE
 // =====================================================
 
