@@ -32,13 +32,20 @@ if (!isset($_GET['idUsuario']) || empty($_GET['idUsuario'])) {
 
 $idUsuario = intval($_GET['idUsuario']);
 
+// Compatibilidad durante la migración: el historial de reportes sigue
+// funcionando incluso antes de agregar idPublicacion a MySQL.
+$columnaComunidad = $conn->query("SHOW COLUMNS FROM notificaciones LIKE 'idPublicacion'");
+$campoPublicacion = ($columnaComunidad && $columnaComunidad->num_rows > 0)
+    ? 'idPublicacion'
+    : 'NULL AS idPublicacion';
+
 // Consulta segura
 $stmt = $conn->prepare("
     SELECT
         idNotificacion,
         idUsuario,
         idReporte,
-        idPublicacion,
+        {$campoPublicacion},
         titulo,
         mensaje,
         tipo,
