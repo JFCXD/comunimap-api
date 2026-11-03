@@ -15,6 +15,11 @@ require_once __DIR__.'/autenticacion_api.php';
 
 try {
     $idUsuario = cmExigirUsuarioActivo($conn);
+    // Los borradores y archivados se consultan solamente por administradores.
+    $incluirTodas = ($_GET['administrar'] ?? '') === '1';
+    if ($incluirTodas) {
+        cmExigirAdministrador($conn);
+    }
     $pagina = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, ['options'=>['min_range'=>1]]);
     if ($pagina === false || $pagina === null || $pagina > 100000) {
         http_response_code(400);
@@ -26,12 +31,13 @@ try {
     $offset = ($pagina-1)*$limite;
     $stmt = $conn->prepare("SELECT p.idPublicacion,p.tipo,p.titulo,p.descripcion,p.imagen,
                 p.fechaActividad,p.horaActividad,p.lugarActividad,p.fechaCierre,
-                p.fechaCreacion,p.idAutor,COALESCE(u.nombre,'OTB Universidad Alto') AS autor
+                p.fechaCreacion,p.estado,p.idAutor,COALESCE(u.nombre,'OTB Universidad Alto') AS autor
             FROM publicaciones p LEFT JOIN usuarios u ON u.idUsuario=p.idAutor
-            WHERE p.estado='Publicado'
+            WHERE (? = 1 OR p.estado='Publicado')
             ORDER BY p.fechaCreacion DESC,p.idPublicacion DESC LIMIT ? OFFSET ?");
     if (!$stmt) throw new RuntimeException('Error al preparar publicaciones');
-    $stmt->bind_param('ii',$limite,$offset);
+    $modoAdmin = $incluirTodas ? 1 : 0;
+    $stmt->bind_param('iii',$modoAdmin,$limite,$offset);
     $stmt->execute();
     $resultado = $stmt->get_result();
     $publicaciones = [];
