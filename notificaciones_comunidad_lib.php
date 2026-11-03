@@ -34,7 +34,10 @@ function cmNotificarPublicacionComunidad(mysqli $conn, int $idPublicacion): arra
     $titulo = $titulos[$publicacion['tipo']];
     $mensaje = trim((string)$publicacion['titulo']);
     // Las notificaciones actuales admiten mensajes de 255 caracteres.
-    $mensaje = substr($mensaje, 0, 240);
+    // Cortar en caracteres completos para preservar UTF-8 en títulos acentuados.
+    if (preg_match('/^.{0,200}/us', $mensaje, $trozo)) {
+        $mensaje = $trozo[0];
+    }
 
     $personas = $conn->query("SELECT idUsuario FROM usuarios WHERE rol='Usuario' AND estado='Activo'");
     if (!$personas) throw new RuntimeException('No se pudieron consultar vecinos');
