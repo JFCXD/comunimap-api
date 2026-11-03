@@ -22,7 +22,7 @@ function cmComunidadResponder(int $codigo,string $mensaje): void {
 function cmComunidadTexto($valor,int $max): ?string {
     if (!is_string($valor)) return null;
     $texto=trim($valor);
-    if ($texto==='' || mb_strlen($texto,'UTF-8')>$max) return null;
+    if ($texto==='' || preg_match_all('/./us',$texto)>$max) return null;
     return $texto;
 }
 function cmComunidadFecha($valor,string $formato): ?string {
@@ -91,7 +91,7 @@ try {
             foreach ($opciones as &$opcion) {
                 $opcion=cmComunidadTexto($opcion,255);
                 if (!$opcion) cmComunidadResponder(422,'Completa todas las opciones.');
-                $normalizada=mb_strtolower($opcion,'UTF-8');
+                $normalizada=strtolower(strtr($opcion,['Á'=>'á','É'=>'é','Í'=>'í','Ó'=>'ó','Ú'=>'ú','Ü'=>'ü','Ñ'=>'ñ']));
                 if (in_array($normalizada,$unicas,true)) {
                     cmComunidadResponder(422,'Las opciones de la encuesta deben ser diferentes.');
                 }
