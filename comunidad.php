@@ -50,7 +50,13 @@ try {
         $fila['encuestaAbierta'] = false;
         if ($fila['imagen']) {
             // El servidor Laravel sirve los archivos publicados, no la API PHP.
-            $fila['imagenUrl'] = 'https://comunimap-production.up.railway.app/'.ltrim($fila['imagen'],'/');
+            $rutaImagen = (string)$fila['imagen'];
+            if (preg_match('/^comunidad\\/([a-f0-9]{40}\\.(?:jpg|png|webp))$/D', $rutaImagen, $coincide)) {
+                $fila['imagenUrl'] = 'https://comunimap-production.up.railway.app/comunidad/imagen/' . $coincide[1];
+            } else {
+                // Compatibilidad con imágenes antiguas guardadas en public/uploads/comunidad.
+                $fila['imagenUrl'] = 'https://comunimap-production.up.railway.app/'.ltrim($rutaImagen,'/');
+            }
         } else {
             $fila['imagenUrl'] = null;
         }
