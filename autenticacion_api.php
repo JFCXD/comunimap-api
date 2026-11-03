@@ -426,3 +426,36 @@ function cmExigirAdministrador(mysqli $conn): int
 
     return $idUsuario;
 }
+
+
+// =====================================================
+// EXIGIR CUENTA ACTIVA (ADMINISTRADOR O USUARIO)
+// =====================================================
+// Reutiliza exactamente los tokens firmados existentes.
+// El servidor obtiene el idUsuario de la firma, nunca del cuerpo enviado.
+function cmExigirUsuarioActivo(mysqli $conn): int
+{
+    $idUsuario = cmValidarToken(cmLeerTokenPeticion());
+    if ($idUsuario === null) {
+        cmRechazarAcceso(401, 'Sesión no válida o caducada. Inicia sesión nuevamente.');
+    }
+
+    $consulta = $conn->prepare(
+        "SELECT rol, estado FROM usuarios WHERE idUsuario = ? LIMIT 1"
+    );
+    if (!$consulta) {
+        throw new RuntimeException('No se pudo comprobar la cuenta');
+    }
+    $consulta->bind_param('i', $idUsuario);
+    $consulta->execute();
+    $usuario = $consulta->get_result()->fetch_assoc();
+    $consulta->close();
+
+    if (!$usuario || strcasecmp(trim((string)$usuario['estado']), 'Activo') !== 0) {
+        cmRechazarAcceso(403, 'La cuenta no tiene acceso activo.');
+    }
+    if (!in_array(trim((string)$usuario['rol']), ['Usuario', 'Administrador'], true)) {
+        cmRechazarAcceso(403, 'La cuenta no tiene permisos.');
+    }
+    return $idUsuario;
+}
