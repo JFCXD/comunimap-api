@@ -171,60 +171,21 @@ $respuesta = [
 ];
 
 // =====================================================
-// TOKEN SOLO PARA ADMINISTRADORES ACTIVOS
+// TOKEN FIRMADO PARA TODAS LAS CUENTAS ACTIVAS
 // =====================================================
-
-// Se verifican espacios y mayúsculas/minúsculas.
-$esAdministrador = (
-    strcasecmp(
-        trim((string) $usuario['rol']),
-        'Administrador'
-    ) === 0
-);
-
-$estaActivo = (
-    strcasecmp(
-        trim((string) $usuario['estado']),
-        'Activo'
-    ) === 0
-);
-
-if ($esAdministrador && $estaActivo) {
-
-    try {
-
-        // Esta función está definida en
-        // autenticacion_api.php
-        $token = cmCrearToken(
-            (int) $usuario['idUsuario']
-        );
-
-        // Campo adicional para Android.
-        // No se reemplaza el objeto usuario.
-        $respuesta['tokenApi'] = $token;
-
-    } catch (Throwable $e) {
-
-        // No revelar la clave ni detalles internos.
-        error_log(
-            'ComuniMap: No se pudo generar el token '
-            . 'administrativo: '
-            . $e->getMessage()
-        );
-
-        http_response_code(500);
-
-        echo json_encode([
-            'success' => false,
-            'message' =>
-                'No se pudo completar el inicio de sesión '
-                . 'administrativo. Inténtalo nuevamente.'
-        ], JSON_UNESCAPED_UNICODE);
-
-        $conn->close();
-
-        exit;
-    }
+// Mantiene tokenApi con el mismo nombre y formato usado por Android.
+// Los permisos de administrador siguen comprobándose en cada endpoint.
+try {
+    $respuesta['tokenApi'] = cmCrearToken((int)$usuario['idUsuario']);
+} catch (Throwable $e) {
+    error_log('ComuniMap: Error al generar token de sesión: ' . $e->getMessage());
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => 'No se pudo completar el inicio de sesión. Inténtalo nuevamente.'
+    ], JSON_UNESCAPED_UNICODE);
+    $conn->close();
+    exit;
 }
 
 // =====================================================
