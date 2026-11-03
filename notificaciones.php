@@ -38,6 +38,7 @@ $stmt = $conn->prepare("
         idNotificacion,
         idUsuario,
         idReporte,
+        idPublicacion,
         titulo,
         mensaje,
         tipo,
@@ -67,6 +68,9 @@ while ($fila = $resultado->fetch_assoc()) {
 
     if ($fila['idReporte'] !== null) {
         $fila['idReporte'] = intval($fila['idReporte']);
+    }
+    if ($fila['idPublicacion'] !== null) {
+        $fila['idPublicacion'] = (int) $fila['idPublicacion'];
     }
 
     $notificaciones[] = $fila;
