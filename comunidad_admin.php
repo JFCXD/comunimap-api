@@ -197,6 +197,20 @@ try {
         }
     }
     $conn->commit(); $transaccion=false;
+
+    // Notificar únicamente al publicar por primera vez o al pasar a Publicado.
+    // Nunca impedir el guardado si FCM está temporalmente indisponible.
+    $debeNotificar = ($accion === 'crear' && $estado === 'Publicado')
+        || ($accion === 'estado' && $estado === 'Publicado' && $pub['estado'] !== 'Publicado');
+    if ($debeNotificar) {
+        try {
+            require_once __DIR__.'/notificaciones_comunidad_lib.php';
+            cmNotificarPublicacionComunidad($conn, (int)$idPublicacion);
+        } catch (Throwable $avisoError) {
+            error_log('ComuniMap: publicación guardada, aviso pendiente: '.$avisoError->getMessage());
+        }
+    }
+
     echo json_encode([
         'success'=>true,
         'message'=>$accion==='crear'?'Publicación creada correctamente.':
