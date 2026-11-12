@@ -58,30 +58,52 @@ $telefono = $datos['telefono'] ?? null;
 $rol = trim($datos['rol']);
 $estado = trim($datos['estado']);
 
+// Solo actualizar datos nuevos cuando el cliente los envía: versiones anteriores
+// de Android no deben borrar apellido y fecha previamente guardados.
+$actualizarApellido = array_key_exists('apellido', $datos);
+$actualizarNacimiento = array_key_exists('fechaNacimiento', $datos);
+$apellido = $actualizarApellido && $datos['apellido'] !== null
+    ? trim((string)$datos['apellido']) : null;
+$fechaNacimiento = $actualizarNacimiento && $datos['fechaNacimiento'] !== null
+    && $datos['fechaNacimiento'] !== ''
+    ? trim((string)$datos['fechaNacimiento']) : null;
+
+if (($actualizarApellido && $apellido !== null && mb_strlen($apellido) > 150)
+    || ($actualizarNacimiento && $fechaNacimiento !== null && (
+        !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $fechaNacimiento)
+        || !($fecha = DateTimeImmutable::createFromFormat('!Y-m-d', $fechaNacimiento))
+        || $fecha->format('Y-m-d') !== $fechaNacimiento
+        || $fecha > new DateTimeImmutable('today')
+    ))) {
+    http_response_code(422);
+    echo json_encode(['success' => false, 'message' => 'Apellido o fecha de nacimiento inválidos'], JSON_UNESCAPED_UNICODE);
+    $conn->close();
+    exit;
+}
+
 // =====================================================
 // ACTUALIZAR USUARIO
 // =====================================================
 
-$stmt = $conn->prepare("
-    UPDATE usuarios
-    SET
-        nombre = ?,
-        email = ?,
-        telefono = ?,
-        rol = ?,
-        estado = ?
-    WHERE idUsuario = ?
-");
+$sql = "UPDATE usuarios SET nombre = ?, email = ?, telefono = ?, rol = ?, estado = ?";
+$parametros = [$nombre, $email, $telefono, $rol, $estado];
+$tipos = 'sssss';
+if ($actualizarApellido) {
+    $sql .= ", apellido = ?";
+    $parametros[] = $apellido;
+    $tipos .= 's';
+}
+if ($actualizarNacimiento) {
+    $sql .= ", fechaNacimiento = ?";
+    $parametros[] = $fechaNacimiento;
+    $tipos .= 's';
+}
+$sql .= " WHERE idUsuario = ?";
+$parametros[] = $idUsuario;
+$tipos .= 'i';
 
-$stmt->bind_param(
-    'sssssi',
-    $nombre,
-    $email,
-    $telefono,
-    $rol,
-    $estado,
-    $idUsuario
-);
+$stmt = $conn->prepare($sql);
+$stmt->bind_param($tipos, ...$parametros);
 
 // Ejecutamos
 if (!$stmt->execute()) {
