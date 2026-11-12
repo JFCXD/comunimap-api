@@ -98,6 +98,8 @@ $stmt = $conn->prepare("
     SELECT
         idUsuario,
         nombre,
+        apellido,
+        fechaNacimiento,
         email,
         telefono,
         rol,
