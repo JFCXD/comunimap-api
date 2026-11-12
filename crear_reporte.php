@@ -255,6 +255,17 @@ try {
     error_log('ComuniMap: error al notificar nuevo reporte: ' . $e->getMessage());
 }
 
+// AVISO DE PRIORIDAD ALTA: un quinto vecino distinto reportó un problema
+// de la misma categoría dentro de un radio de cinco metros.
+// No modifica el reporte ni reemplaza el aviso de nuevo reporte.
+try {
+    require_once __DIR__ . '/notificar_prioridad_alta.php';
+    notificarPrioridadAlta($conn, $idReporteCreado, $idCategoria, (float)$latitud, (float)$longitud);
+} catch (Throwable $e) {
+    // No fallar la creación del reporte si falla la notificación.
+    error_log('ComuniMap: error al notificar prioridad alta: ' . $e->getMessage());
+}
+
 // =====================================================
 // RESPUESTA
 // =====================================================
