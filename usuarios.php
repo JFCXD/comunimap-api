@@ -16,6 +16,8 @@ $sql = "
     SELECT
         idUsuario,
         nombre,
+        apellido,
+        fechaNacimiento,
         email,
         telefono,
         rol,
