@@ -64,6 +64,7 @@ $fechaNacimiento = trim($datos['fechaNacimiento']);
 
 if (($apellido !== null && mb_strlen($apellido) > 150)
     || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/D', $fechaNacimiento)
+    || substr($fechaNacimiento, 0, 4) === '0000'
     || !($fecha = DateTimeImmutable::createFromFormat('!Y-m-d', $fechaNacimiento))
     || $fecha->format('Y-m-d') !== $fechaNacimiento
     || $fecha > new DateTimeImmutable('today')) {
