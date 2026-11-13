@@ -33,7 +33,10 @@ if (
     empty($datos['nombre']) ||
     empty($datos['email']) ||
     empty($datos['password']) ||
-    empty($datos['telefono'])
+    empty($datos['telefono']) ||
+    !isset($datos['fechaNacimiento']) ||
+    !is_string($datos['fechaNacimiento']) ||
+    trim($datos['fechaNacimiento']) === ''
 ) {
 
     http_response_code(400);
@@ -54,18 +57,16 @@ $nombre = trim((string) $datos['nombre']);
 $email = trim((string) $datos['email']);
 $telefono = trim((string) $datos['telefono']);
 
-// Campos opcionales para compatibilidad con aplicaciones Android anteriores.
+// El apellido conserva su comportamiento anterior. La fecha de nacimiento es
+// obligatoria en los registros nuevos, sin imponer ninguna edad mínima.
 $apellido = isset($datos['apellido']) ? trim((string) $datos['apellido']) : null;
-$fechaNacimiento = isset($datos['fechaNacimiento']) && $datos['fechaNacimiento'] !== ''
-    ? trim((string) $datos['fechaNacimiento']) : null;
+$fechaNacimiento = trim($datos['fechaNacimiento']);
 
 if (($apellido !== null && mb_strlen($apellido) > 150)
-    || ($fechaNacimiento !== null && (
-        !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $fechaNacimiento)
-        || !($fecha = DateTimeImmutable::createFromFormat('!Y-m-d', $fechaNacimiento))
-        || $fecha->format('Y-m-d') !== $fechaNacimiento
-        || $fecha > new DateTimeImmutable('today')
-    ))) {
+    || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/D', $fechaNacimiento)
+    || !($fecha = DateTimeImmutable::createFromFormat('!Y-m-d', $fechaNacimiento))
+    || $fecha->format('Y-m-d') !== $fechaNacimiento
+    || $fecha > new DateTimeImmutable('today')) {
     http_response_code(422);
     echo json_encode(['success' => false, 'message' => 'Apellido o fecha de nacimiento inválidos'], JSON_UNESCAPED_UNICODE);
     $conn->close();
