@@ -33,7 +33,7 @@ if (
     empty($datos['nombre']) ||
     empty($datos['email']) ||
     empty($datos['password']) ||
-    empty($datos['rol'])
+    empty($datos['telefono'])
 ) {
 
     http_response_code(400);
@@ -50,9 +50,9 @@ if (
 // DATOS
 // =====================================================
 
-$nombre = trim($datos['nombre']);
-$email = trim($datos['email']);
-$telefono = $datos['telefono'] ?? null;
+$nombre = trim((string) $datos['nombre']);
+$email = trim((string) $datos['email']);
+$telefono = trim((string) $datos['telefono']);
 
 // Campos opcionales para compatibilidad con aplicaciones Android anteriores.
 $apellido = isset($datos['apellido']) ? trim((string) $datos['apellido']) : null;
@@ -68,6 +68,23 @@ if (($apellido !== null && mb_strlen($apellido) > 150)
     ))) {
     http_response_code(422);
     echo json_encode(['success' => false, 'message' => 'Apellido o fecha de nacimiento inválidos'], JSON_UNESCAPED_UNICODE);
+    $conn->close();
+    exit;
+}
+
+// Validaciones finales del registro en el servidor, independientes de Android.
+// El teléfono es obligatorio para TODAS las cuentas nuevas.
+if (mb_strlen($nombre) < 2 || mb_strlen($nombre) > 100
+    || !filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 190
+    || !preg_match('/^\\+?[0-9]{7,15}$/D', $telefono)
+    || !is_string($datos['password']) || strlen($datos['password']) < 6
+    || strlen($datos['password']) > 72
+    || ($apellido !== null && $apellido !== '' && mb_strlen($apellido) > 150)) {
+    http_response_code(422);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Comprueba el nombre, correo, contraseña y teléfono (7 a 15 dígitos).'
+    ], JSON_UNESCAPED_UNICODE);
     $conn->close();
     exit;
 }
